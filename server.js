@@ -34,6 +34,10 @@ mongoose.connect(mongoURI)
         console.log('MongoDB Connected.');
         const db = mongoose.connection.db;
         gfsBucket = new GridFSBucket(db, { bucketName: 'uploads' });
+        
+        server.listen(3000, () => {
+            console.log('Server running at http://localhost:3000');
+        });
     })
     .catch((err) => console.log('MongoDB Error:', err));
 
@@ -134,8 +138,4 @@ io.on('connection', (socket) => {
 
         io.emit('new_event', newAlert);
     });
-});
-
-server.listen(3000, () => {
-    console.log('Server running at http://localhost:3000');
 });

@@ -57,7 +57,8 @@ async function attemptUpload(filename) {
     } catch (err) {
         if (err.code === 'ECONNREFUSED') {
         } else {
-            console.log(`[SWEEPER] Upload failed for ${filename} (Will retry later)`);
+            console.log(`[SWEEPER] Upload failed for ${filename} | Reason: ${err.message} (Will retry later)`);
+            if (err.response) console.log(`Server says: ${err.response.data}`);
         }
     }
 }
