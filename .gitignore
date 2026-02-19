@@ -1,30 +1,48 @@
-# 1. Node.js Dependencies
-node_modules/
-npm-debug.log
+# --- 1. Node.js Backend ---
+backend/node_modules/
+backend/npm-debug.log
+backend/yarn-error.log
+backend/logs/
+backend/pids/
+backend/*.pid
+backend/*.seed
+backend/*.pid.lock
 
-# 2. Security / Secrets (CRITICAL)
+# --- 2. Environment Variables (CRITICAL) ---
+# Never commit your database URI or JWT secrets
+backend/.env
 .env
-test_tools/setup_admin.js
 
-# 3. Media & Video Files
-# (We don't want to upload heavy 100MB videos to GitHub)
+# --- 3. Python Edge Device ---
+edge_device/__pycache__/
+edge_device/*.pyc
+edge_device/venv/
+edge_device/.venv/
+edge_device/env/
+
+# --- 4. AI Models & Large Assets ---
+# You can comment out the next line if you WANT to commit the model (it's only 6MB)
+edge_device/model/*.tflite
+edge_device/model/*.zip
+
+# --- 5. Media & Evidence ---
+# Ignore heavy video files anywhere in the project
 assets/*.mp4
 *.mp4
 *.h264
 *.avi
 evidence_*.mp4
 
-# 4. Python Cache (For your Raspberry Pi scripts)
-__pycache__/
-*.py[cod]
-*$py.class
+# --- 6. Uploads & Temporary Storage ---
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/test_tools/uploads/*
+!backend/test_tools/uploads/.gitkeep
 
-# 5. AI Models
-# (These are too large for standard GitHub repos. Download them directly to the Pi)
-pi_code/model/*.tflite
-pi_code/model/*.zip
-
-# 6. OS System Files
+# --- 7. OS & Editor Files ---
 .DS_Store
 Thumbs.db
 desktop.ini
+.vscode/
+.idea/
+*.swp
