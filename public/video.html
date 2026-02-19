@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Evidence Playback</title>
+    <style>
+        body {
+            margin: 0;
+            background: #000;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        /* The Video Player */
+        video {
+            width: 90%;
+            max-width: 1000px;
+            max-height: 80vh;
+            border: 2px solid #333;
+            border-radius: 8px;
+            box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+            background: #111;
+        }
+
+        /* Header Info */
+        .info-bar {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        h2 {
+            margin: 0 0 5px 0;
+            color: #44aaff;
+        }
+
+        p {
+            margin: 0;
+            opacity: 0.7;
+        }
+
+        /* Back Button */
+        .back-btn {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 10px 20px;
+            background: #333;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+
+        .back-btn:hover {
+            background: #555;
+        }
+    </style>
+</head>
+
+<body>
+
+    <a href="/" class="back-btn">← Back to Dashboard</a>
+
+    <div class="info-bar">
+        <h2 id="videoTitle">Loading Evidence...</h2>
+        <p>Recorded by Security System</p>
+    </div>
+
+    <video id="player" controls autoplay>
+        <source src="" type="video/mp4">
+        Your browser does not support the video tag.
+    </video>
+
+    <script>
+        // 1. Get the Video ID from the URL (?id=...)
+        const params = new URLSearchParams(window.location.search);
+        const videoId = params.get('id');
+        const filename = params.get('name');
+
+        const player = document.getElementById('player');
+        const title = document.getElementById('videoTitle');
+
+        if (videoId) {
+            // 2. Set the source to our stream route
+            player.src = `/video/${videoId}`;
+            if (filename) title.innerText = filename;
+        } else {
+            title.innerText = "Error: No Video ID found";
+            title.style.color = "red";
+        }
+    </script>
+</body>
+
+</html>

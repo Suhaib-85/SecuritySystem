@@ -1,0 +1,29 @@
+# 1. Node.js Dependencies
+node_modules/
+npm-debug.log
+
+# 2. Security / Secrets (CRITICAL)
+.env
+
+# 3. Media & Video Files
+# (We don't want to upload heavy 100MB videos to GitHub)
+assets/*.mp4
+*.mp4
+*.h264
+*.avi
+evidence_*.mp4
+
+# 4. Python Cache (For your Raspberry Pi scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 5. AI Models
+# (These are too large for standard GitHub repos. Download them directly to the Pi)
+pi_code/model/*.tflite
+pi_code/model/*.zip
+
+# 6. OS System Files
+.DS_Store
+Thumbs.db
+desktop.ini
