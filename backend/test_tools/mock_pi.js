@@ -67,7 +67,7 @@ async function attemptUpload(filename) {
         const form = new FormData();
         form.append('video', fs.createReadStream(filepath));
 
-        const res = await axios.post(`${SERVER_URL}/upload`, form, {
+        const res = await axios.post(`${SERVER_URL}/api/upload`, form, {
             headers: {
                 ...form.getHeaders(),
                 'Authorization': `Bearer ${HARDWARE_SECRET}`
