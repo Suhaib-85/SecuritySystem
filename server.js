@@ -1,5 +1,6 @@
 import { setServers } from 'dns';
 setServers(['8.8.8.8', '8.8.4.4']);
+
 import express from 'express';
 import mongoose from 'mongoose';
 import { createServer } from 'http';
@@ -11,17 +12,23 @@ import dotenv from 'dotenv';
 import multer from 'multer';
 import { Readable } from 'stream';
 import { GridFSBucket } from 'mongodb';
+
 dotenv.config();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const app = express();
 const server = createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
 const mongoURI = process.env.MONGO_URI;
 let gfsBucket;
+
 mongoose.connect(mongoURI)
     .then(() => {
         console.log('MongoDB Connected.');
@@ -29,6 +36,7 @@ mongoose.connect(mongoURI)
         gfsBucket = new GridFSBucket(db, { bucketName: 'uploads' });
     })
     .catch((err) => console.log('MongoDB Error:', err));
+
 const EventSchema = new mongoose.Schema({
     timestamp: { type: Date, default: Date.now },
     type: { type: String, required: true },
@@ -36,6 +44,7 @@ const EventSchema = new mongoose.Schema({
     videoId: mongoose.Schema.Types.ObjectId,
     filename: String
 });
+
 const Event = mongoose.model('Event', EventSchema);
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
@@ -44,23 +53,17 @@ app.post('/upload', upload.single('video'), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No file received' });
     }
-
     console.log('Uploading file to GridFS...');
-
     const filename = `evidence_${Date.now()}_${req.file.originalname}`;
-
     const writeStream = gfsBucket.openUploadStream(filename, {
         contentType: req.file.mimetype
     });
-
     const readableStream = new Readable();
     readableStream.push(req.file.buffer);
     readableStream.push(null);
     readableStream.pipe(writeStream);
-
     writeStream.on('finish', async () => {
         console.log(`File Stored in GridFS! ID: ${writeStream.id}`);
-
         try {
             const newEvent = new Event({
                 type: 'video',
@@ -69,9 +72,7 @@ app.post('/upload', upload.single('video'), (req, res) => {
                 videoId: writeStream.id
             });
             await newEvent.save();
-
             io.emit('new_event', newEvent);
-
             res.status(201).json({ message: 'Upload success', fileId: writeStream.id });
         } catch (dbErr) {
             console.error("Metadata Save Failed:", dbErr);
@@ -84,6 +85,7 @@ app.post('/upload', upload.single('video'), (req, res) => {
         res.status(500).json({ error: "Error uploading file" });
     });
 });
+
 app.get('/video/:id', async (req, res) => {
     if (!gfsBucket) return res.status(500).send("DB not ready");
     try {
@@ -96,6 +98,7 @@ app.get('/video/:id', async (req, res) => {
         res.status(400).send("Invalid ID");
     }
 });
+
 app.get('/api/events', async (req, res) => {
     try {
         const events = await Event.find().sort({ timestamp: -1 }).limit(20);
@@ -104,15 +107,20 @@ app.get('/api/events', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
 let SYSTEM_ACTIVE = false;
+
 io.on('connection', (socket) => {
     console.log('Client connected:', socket.id);
+
     socket.emit('state_update', { isActive: SYSTEM_ACTIVE });
+
     socket.on('toggle_system', (data) => {
         SYSTEM_ACTIVE = data.isActive;
         console.log(`[COMMAND] System Set to: ${SYSTEM_ACTIVE}`);
         io.emit('state_update', { isActive: SYSTEM_ACTIVE });
     });
+
     socket.on('pi_alert', async (data) => {
         if (!SYSTEM_ACTIVE) return;
         console.log("ALERT RECEIVED from Pi");
@@ -121,10 +129,13 @@ io.on('connection', (socket) => {
             message: "Person Detected!",
             timestamp: new Date()
         });
+
         await newAlert.save();
+
         io.emit('new_event', newAlert);
     });
 });
+
 server.listen(3000, () => {
     console.log('Server running at http://localhost:3000');
 });
