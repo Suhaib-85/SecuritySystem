@@ -22,8 +22,8 @@ edge_device/env/
 
 # --- 4. AI Models & Large Assets ---
 # You can comment out the next line if you WANT to commit the model (it's only 6MB)
-edge_device/model/*.tflite
-edge_device/model/*.zip
+# edge_device/model/*.tflite
+# edge_device/model/*.zip
 
 # --- 5. Media & Evidence ---
 # Ignore heavy video files anywhere in the project
