@@ -20,7 +20,7 @@ if (!fs.existsSync(PENDING_DIR)) {
 const socket = io(SERVER_URL, { reconnection: true });
 let isSystemActive = false;
 
-console.log("🔌 Mock Pi booting up...");
+console.log("Mock Pi booting up...");
 
 socket.on("connect", () => {
     console.log("Socket Connected! ID:", socket.id);

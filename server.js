@@ -39,7 +39,6 @@ const EventSchema = new mongoose.Schema({
 const Event = mongoose.model('Event', EventSchema);
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
-// REPLACE your current app.post('/upload'...) with this:
 
 app.post('/upload', upload.single('video'), (req, res) => {
     if (!req.file) {
@@ -48,31 +47,26 @@ app.post('/upload', upload.single('video'), (req, res) => {
 
     console.log('Uploading file to GridFS...');
 
-    // 1. Generate Filename manually so we can access it later
     const filename = `evidence_${Date.now()}_${req.file.originalname}`;
 
-    // 2. Create Write Stream
     const writeStream = gfsBucket.openUploadStream(filename, {
         contentType: req.file.mimetype
     });
 
-    // 3. Pipe Buffer to Stream
     const readableStream = new Readable();
     readableStream.push(req.file.buffer);
     readableStream.push(null);
     readableStream.pipe(writeStream);
 
-    // 4. Handle Finish (FIXED: No 'file' argument needed)
     writeStream.on('finish', async () => {
-        // FIX: Access .id directly from the writeStream object
         console.log(`File Stored in GridFS! ID: ${writeStream.id}`);
 
         try {
             const newEvent = new Event({
                 type: 'video',
                 message: 'Video Recording Uploaded',
-                filename: filename,       // Use the variable from step 1
-                videoId: writeStream.id   // Use the stream's ID property
+                filename: filename,
+                videoId: writeStream.id
             });
             await newEvent.save();
 
