@@ -10,23 +10,66 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const SERVER_URL = 'http://localhost:3000';
-const VIDEO_SOURCE = path.join(__dirname, 'assets', 'sample.mp4');
+const ASSET_SOURCE = path.join(__dirname, '..', 'assets', 'sample.mp4');
+const PENDING_DIR = path.join(__dirname, 'pending_uploads');
 
-const socket = io(SERVER_URL);
+if (!fs.existsSync(PENDING_DIR)) {
+    fs.mkdirSync(PENDING_DIR);
+}
+
+const socket = io(SERVER_URL, { reconnection: true });
 let isSystemActive = false;
 
-console.log("Mock Pi connecting...");
+console.log("🔌 Mock Pi booting up...");
 
 socket.on("connect", () => {
-    console.log("Connected! ID:", socket.id);
+    console.log("Socket Connected! ID:", socket.id);
+});
+
+socket.on("disconnect", () => {
+    console.log("Socket Disconnected. Waiting for server...");
 });
 
 socket.on("state_update", (data) => {
     isSystemActive = data.isActive;
     const status = isSystemActive ? "ARMED" : "DISARMED";
-    console.log(`[STATE] ${status}`);
-    if (isSystemActive) console.log("(Press ENTER to simulate Motion + Video)");
+    console.log(`\n[STATE] ${status}`);
+    if (isSystemActive) console.log("   (Press ENTER to simulate Motion)");
 });
+
+async function attemptUpload(filename) {
+    const filepath = path.join(PENDING_DIR, filename);
+
+    try {
+        const form = new FormData();
+        form.append('video', fs.createReadStream(filepath));
+
+        const res = await axios.post(`${SERVER_URL}/upload`, form, {
+            headers: { ...form.getHeaders() },
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity
+        });
+
+        if (res.status === 201) {
+            console.log(`[SWEEPER] Upload Success: ${filename}`);
+            fs.unlinkSync(filepath);
+        }
+    } catch (err) {
+        if (err.code === 'ECONNREFUSED') {
+        } else {
+            console.log(`[SWEEPER] Upload failed for ${filename} (Will retry later)`);
+        }
+    }
+}
+
+setInterval(() => {
+    const pendingFiles = fs.readdirSync(PENDING_DIR);
+    if (pendingFiles.length > 0) {
+        console.log(`\n🔄 [SWEEPER] Found ${pendingFiles.length} pending video(s). Attempting uploads...`);
+        pendingFiles.forEach(file => attemptUpload(file));
+    }
+}, 10000);
+
 
 async function triggerMotionSequence() {
     if (!isSystemActive) {
@@ -36,37 +79,30 @@ async function triggerMotionSequence() {
 
     console.log("\n--- MOTION DETECTED ---");
 
-    console.log("1. Sending Alert...");
-    socket.emit("pi_alert", { location: "Simulated Cam" });
+    console.log("1. Sending Instant Alert...");
+    if (socket.connected) {
+        socket.emit("pi_alert", { location: "Simulated Cam" });
+    } else {
+        console.log("Alert dropped (No socket connection)");
+    }
 
-    console.log("2. Recording Video (Simulating)...");
-    await new Promise(r => setTimeout(r, 2000));
+    // B. Simulate Recording Video
+    console.log("2. Recording Video locally...");
+    const timestamp = Date.now();
+    const newFilename = `recording_${timestamp}.mp4`;
+    const newFilepath = path.join(PENDING_DIR, newFilename);
 
-    console.log("3. Uploading Evidence...");
-
-    if (!fs.existsSync(VIDEO_SOURCE)) {
-        console.error("ERROR: 'assets/sample.mp4' not found. Cannot upload.");
+    if (fs.existsSync(ASSET_SOURCE)) {
+        fs.copyFileSync(ASSET_SOURCE, newFilepath);
+        console.log(`Saved to SD Card: ${newFilename}`);
+    } else {
+        console.error("ERROR: Source asset not found.");
         return;
     }
 
-    try {
-        const form = new FormData();
-        form.append('video', fs.createReadStream(VIDEO_SOURCE));
-
-        const res = await axios.post(`${SERVER_URL}/upload`, form, {
-            headers: { ...form.getHeaders() }
-        });
-
-        console.log(`UPLOAD COMPLETE! File ID: ${res.data.fileId}`);
-        console.log("--- SEQUENCE FINISHED ---\n");
-
-    } catch (err) {
-        console.error("Upload Failed:", err.message);
-    }
+    console.log("3. Passing to Background Uploader...");
+    attemptUpload(newFilename);
 }
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-rl.on('line', () => {
-    triggerMotionSequence();
-});
+rl.on('line', () => triggerMotionSequence());
