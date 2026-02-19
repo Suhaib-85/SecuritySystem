@@ -4,6 +4,7 @@ npm-debug.log
 
 # 2. Security / Secrets (CRITICAL)
 .env
+test_tools/setup_admin.js
 
 # 3. Media & Video Files
 # (We don't want to upload heavy 100MB videos to GitHub)

@@ -1,0 +1,11 @@
+import mongoose from 'mongoose';
+
+const eventSchema = new mongoose.Schema({
+    timestamp: { type: Date, default: Date.now },
+    type: { type: String, required: true },
+    message: String,
+    videoId: mongoose.Schema.Types.ObjectId,
+    filename: String
+});
+
+export default mongoose.model('Event', eventSchema);
