@@ -1,23 +1,27 @@
 import jwt from 'jsonwebtoken';
 import Event from '../models/Event.js';
+import Device from '../models/Device.js';
+import crypto from 'crypto';
 
 let SYSTEM_ACTIVE = false;
 
 export const setupSocketLogic = (io) => {
 
-    io.use((socket, next) => {
+    io.use(async (socket, next) => {
         const token = socket.handshake.auth.token;
 
         if (!token) {
             return next(new Error('Authentication error: No token provided'));
         }
 
-        if (token === process.env.MOCK_PI_SECRET) {
-            socket.isPi = true;
-            return next();
-        }
-
         try {
+            const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+            const validDevice = await Device.findOne({ apiKeyHash: hashedToken, isActive: true });
+            if (validDevice) {
+                socket.isPi = true;
+                socket.device = validDevice;
+                return next();
+            }
             const verified = jwt.verify(token, process.env.JWT_SECRET);
             socket.user = verified;
             socket.isPi = false;

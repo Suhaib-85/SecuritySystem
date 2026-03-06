@@ -302,7 +302,7 @@
                 return `
                     <div class="media-item" data-type="image" data-id="${event.videoId}" data-filename="${event.filename}">
                         <div class="media-type">IMAGE</div>
-                        <img src="/video/${event.videoId}?token=${authToken}" alt="${event.filename}" loading="lazy">
+                        <img src="/api/video/${event.videoId}?token=${authToken}" alt="${event.filename}" loading="lazy">
                         <div class="media-info">${event.filename}</div>
                     </div>
                 `;
@@ -317,14 +317,14 @@
                 container.innerHTML = `
                     <h3>${filename}</h3>
                     <video controls autoplay class="focused-media">
-                        <source src="/video/${id}?token=${authToken}" type="video/mp4">
+                        <source src="/api/video/${id}?token=${authToken}" type="video/mp4">
                         Your browser does not support video tag.
                     </video>
                 `;
             } else if (type === 'image') {
                 container.innerHTML = `
                     <h3>${filename}</h3>
-                    <img src="/video/${id}?token=${authToken}" alt="${filename}" class="focused-media">
+                    <img src="/api/video/${id}?token=${authToken}" alt="${filename}" class="focused-media">
                 `;
             }
             

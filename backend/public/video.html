@@ -97,7 +97,7 @@
         if (videoId) {
             // 🛡️ 2. Append the JWT Token to the video source URL
             // This allows the server to verify who is requesting the video stream
-            player.src = `/video/${videoId}?token=${token}`;
+            player.src = `/api/video/${videoId}?token=${token}`;
             if (filename) title.innerText = filename;
         } else {
             title.innerText = "Error: No Video ID found";

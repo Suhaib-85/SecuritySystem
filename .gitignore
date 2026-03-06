@@ -20,12 +20,15 @@ edge_device/venv/
 edge_device/.venv/
 edge_device/env/
 
-# --- 4. AI Models & Large Assets ---
+# --- 4. Documentation ---
+docs/
+
+# --- 5. AI Models & Large Assets ---
 # You can comment out the next line if you WANT to commit the model (it's only 6MB)
 # edge_device/model/*.tflite
 # edge_device/model/*.zip
 
-# --- 5. Media & Evidence ---
+# --- 6. Media & Evidence ---
 # Ignore heavy video files anywhere in the project
 assets/*.mp4
 *.mp4
@@ -33,7 +36,13 @@ assets/*.mp4
 *.avi
 evidence_*.mp4
 
-# --- 6. Uploads & Temporary Storage ---
+# Ignore evidence recordings and pending uploads
+edge_device/recordings/
+edge_device/pending_uploads/
+evidence_*.jpg
+evidence_*.png
+
+# --- 7. Uploads & Temporary Storage ---
 backend/uploads/*
 !backend/uploads/.gitkeep
 backend/test_tools/uploads/*

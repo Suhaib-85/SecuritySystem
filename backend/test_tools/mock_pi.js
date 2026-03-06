@@ -14,13 +14,14 @@ const __dirname = path.dirname(__filename);
 
 const SERVER_URL = 'http://localhost:3000';
 const ASSET_SOURCE = path.join(__dirname, '..', '..', 'assets', 'sample.mp4');
-const PENDING_DIR = path.join(__dirname, 'uploads');
+const PENDING_DIR = path.join(__dirname, 'pending_uploads');
 
 if (!fs.existsSync(PENDING_DIR)) {
     fs.mkdirSync(PENDING_DIR);
 }
 
-const HARDWARE_SECRET = process.env.MOCK_PI_SECRET;
+// Ensure this matches the variable name in your .env file
+const HARDWARE_SECRET = process.env.PI_SECRET;
 
 const socket = io(SERVER_URL, {
     reconnection: true,
@@ -65,6 +66,19 @@ async function attemptUpload(filename) {
 
     try {
         const form = new FormData();
+
+        // --- NEW METADATA LOGIC ---
+        // Extract the exact creation time of the local file
+        const stats = fs.statSync(filepath);
+        const edgeTimestamp = stats.mtime.toISOString();
+        const sessionId = `mock_session_${stats.mtimeMs}`; // Generate a unique session ID
+
+        const isImage = filename.toLowerCase().endsWith('.jpg') || filename.toLowerCase().endsWith('.png');
+        const fileType = isImage ? 'image' : 'video';
+
+        form.append('sessionId', sessionId);
+        form.append('fileType', fileType);
+        form.append('edgeTimestamp', edgeTimestamp);
         form.append('video', fs.createReadStream(filepath));
 
         const res = await axios.post(`${SERVER_URL}/api/upload`, form, {

@@ -6,10 +6,17 @@ import socketio
 import threading
 import datetime
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- 1. CONFIGURATION ---
-SERVER_URL = "http://127.0.0.1:3000"
-SECRET_KEY = "301_BSCS_2K22"  # <--- CHECK YOUR KEY
+SERVER_URL = os.getenv("SERVER_URL")
+SECRET_KEY = os.getenv("PI_API_KEY")  # <--- CHECK YOUR KEY
+
+if not SECRET_KEY:
+    raise ValueError("FATAL: PI_API_KEY must be set in .env file")
+
 CONFIDENCE_THRESHOLD = 0.50
 MAX_VIDEO_LENGTH = 60  # 1 Minute Max
 STILL_IMAGE_INTERVAL = 30  # New photo every 30s of motion
@@ -18,7 +25,7 @@ MOTION_TIMEOUT = 10  # End intrusion if no motion for 10s
 # Paths
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(CURRENT_DIR, "model")
-RECORDINGS_DIR = os.path.join(CURRENT_DIR, "recordings")
+RECORDINGS_DIR = os.path.join(CURRENT_DIR, "recordings")  # Simulated SD card
 PENDING_DIR = os.path.join(CURRENT_DIR, "pending_uploads")
 MODEL_PATH = os.path.join(MODEL_DIR, "ssd_mobilenet_v2_coco_quant_postprocess.tflite")
 LABEL_PATH = os.path.join(MODEL_DIR, "coco_labels.txt")
@@ -121,7 +128,7 @@ with open(LABEL_PATH, "r") as f:
 def check_ai_for_person(frame):
     """Runs the AI model on a single frame. Returns (True, confidence) if person found."""
     start_time = time.time()
-    
+
     frame_resized = cv2.resize(frame, (width, height))
     input_data = np.expand_dims(frame_resized, axis=0)
 
@@ -144,9 +151,11 @@ def check_ai_for_person(frame):
                 labels[int(classes[i])] if int(classes[i]) < len(labels) else "Unknown"
             )
             if object_name == "person":
-                print(f"🧠 AI Inference: {inference_time:.1f}ms (Person: {int(scores[i]*100)}%)")
+                print(
+                    f"🧠 AI Inference: {inference_time:.1f}ms (Person: {int(scores[i]*100)}%)"
+                )
                 return True, scores[i]
-    
+
     print(f"🧠 AI Inference: {inference_time:.1f}ms (No person detected)")
     return False, 0.0
 
@@ -179,19 +188,22 @@ def save_to_pending(file_path, file_type="video"):
     try:
         filename = os.path.basename(file_path)
         pending_path = os.path.join(PENDING_DIR, filename)
-        
+
         # Copy file to pending directory
         import shutil
+
         shutil.copy2(file_path, pending_path)
-        
+
         # Add to pending uploads list
-        pending_uploads.append({
-            'filename': filename,
-            'filepath': pending_path,
-            'type': file_type,
-            'attempts': 0
-        })
-        
+        pending_uploads.append(
+            {
+                "filename": filename,
+                "filepath": pending_path,
+                "type": file_type,
+                "attempts": 0,
+            }
+        )
+
         print(f"📁 Queued for upload: {filename}")
         return True
     except Exception as e:
@@ -202,32 +214,41 @@ def save_to_pending(file_path, file_type="video"):
 def attempt_upload(pending_file):
     """Attempt to upload a single pending file"""
     global pending_uploads, last_error_message
-    
+
     try:
-        with open(pending_file['filepath'], 'rb') as f:
-            files = {'video': (pending_file['filename'], f, 'video/mp4' if pending_file['type'] == "video" else 'image/jpeg')}
-            data = {
-                'sessionId': intrusion_session_id,
-                'type': pending_file['type']
+        with open(pending_file["filepath"], "rb") as f:
+            files = {
+                "video": (
+                    pending_file["filename"],
+                    f,
+                    "video/mp4" if pending_file["type"] == "video" else "image/jpeg",
+                )
             }
-            headers = {'Authorization': f'Bearer {SECRET_KEY}'}
-            
+            data = {
+                "sessionId": intrusion_session_id,
+                "fileType": pending_file["type"],
+                "edgeTimestamp": pending_file.get(
+                    "timestamp", "datetime.datetime.now().isoformat()"
+                ),
+            }
+            headers = {"Authorization": f"Bearer {SECRET_KEY}"}
+
             # Enhanced configuration for large files
             response = requests.post(
-                f"{SERVER_URL}/api/upload", 
-                files=files, 
-                data=data, 
-                headers=headers, 
-                timeout=30,
-                stream=True  # Enable streaming for large files
+                f"{SERVER_URL}/api/upload",
+                files=files,
+                data=data,
+                headers=headers,
+                timeout=120,
+                stream=True,  # Enable streaming for large files
             )
-            
-        pending_file['attempts'] += 1
-        
+
+        pending_file["attempts"] += 1
+
         if response.status_code == 201:
             print(f"🧹 [SWEEPER] Upload Success: {pending_file['filename']}")
             # Remove from pending list and delete local file
-            os.remove(pending_file['filepath'])
+            os.remove(pending_file["filepath"])
             pending_uploads.remove(pending_file)
             return True
         else:
@@ -257,31 +278,70 @@ def attempt_upload(pending_file):
 def sweeper_function():
     """Background sweeper to handle pending uploads"""
     global is_sweeping, pending_uploads
-    
+
     if is_sweeping or len(pending_uploads) == 0:
         return
-    
+
     is_sweeping = True
-    print(f"\n🧹 [SWEEPER] Found {len(pending_uploads)} pending file(s). Attempting uploads...")
-    
-    for pending_file in pending_uploads[:]:  # Copy list to avoid modification during iteration
+    print(
+        f"\n🧹 [SWEEPER] Found {len(pending_uploads)} pending file(s). Attempting uploads..."
+    )
+
+    for pending_file in pending_uploads[
+        :
+    ]:  # Copy list to avoid modification during iteration
         attempt_upload(pending_file)
-    
+
     is_sweeping = False
 
 
 def get_safe_timestamp():
     """Generate safe timestamp for filenames (replaces : and . with -)"""
-    return datetime.datetime.now().isoformat().replace(':', '-').replace('.', '-')
+    return datetime.datetime.now().isoformat().replace(":", "-").replace(".", "-")
+
+
+def cleanup_old_recordings(days_to_keep=7):
+    """Deletes files in the recordings directory older than specified days to prevent SD card from filling up."""
+    if not os.path.exists(RECORDINGS_DIR):
+        return
+
+    current_time = time.time()
+    cutoff_time = current_time - (days_to_keep * 86400)  # 86400 seconds in a day
+    deleted_count = 0
+
+    for filename in os.listdir(RECORDINGS_DIR):
+        filepath = os.path.join(RECORDINGS_DIR, filename)
+        if os.path.isfile(filepath):
+            file_mtime = os.path.getmtime(filepath)
+            if file_mtime < cutoff_time:
+                try:
+                    os.remove(filepath)
+                    deleted_count += 1
+                except Exception as e:
+                    print(
+                        f"❌ [CLEANUP] Failed to delete old recording {filename}: {e}"
+                    )
+
+    if deleted_count > 0:
+        print(
+            f"♻️ [CLEANUP] Removed {deleted_count} old recording(s) (> {days_to_keep} days) to free up space."
+        )
 
 
 def start_sweeper():
     """Start the background sweeper thread"""
+    last_cleanup_time = 0
+
     def sweeper_loop():
+        nonlocal last_cleanup_time
         while True:
             time.sleep(10)  # Run every 10 seconds
             sweeper_function()
-    
+            current_time = time.time()
+            if current_time - last_cleanup_time > 3600:
+                cleanup_old_recordings(days_to_keep=7)
+                last_cleanup_time = current_time
+
     sweeper_thread = threading.Thread(target=sweeper_loop, daemon=True)
     sweeper_thread.start()
     print("🧹 [SWEEPER] Background uploader started")
@@ -290,24 +350,28 @@ def start_sweeper():
 def recover_pending_files():
     """Recover any pending files from previous sessions"""
     global pending_uploads
-    
+
     if os.path.exists(PENDING_DIR):
         existing_files = os.listdir(PENDING_DIR)
         if existing_files:
-            print(f"🔄 [RECOVERY] Found {len(existing_files)} pending file(s) from previous session")
-            
+            print(
+                f"🔄 [RECOVERY] Found {len(existing_files)} pending file(s) from previous session"
+            )
+
             for filename in existing_files:
                 filepath = os.path.join(PENDING_DIR, filename)
-                file_type = "video" if filename.endswith('.mp4') else "image"
-                
-                pending_uploads.append({
-                    'filename': filename,
-                    'filepath': filepath,
-                    'type': file_type,
-                    'attempts': 0
-                })
+                file_type = "video" if filename.endswith(".mp4") else "image"
+
+                pending_uploads.append(
+                    {
+                        "filename": filename,
+                        "filepath": filepath,
+                        "type": file_type,
+                        "attempts": 0,
+                    }
+                )
                 print(f"📁 Recovered: {filename}")
-            
+
             print("🧹 [RECOVERY] Files queued for upload")
         else:
             print("🧹 [RECOVERY] No pending files found")
@@ -364,7 +428,9 @@ while True:
                 intrusion_session_id = get_safe_timestamp()
 
                 print(f"\n--- MOTION DETECTED ---")
-                print(f"🚨 INTRUSION STARTED! (Session: {intrusion_session_id}, Confidence: {int(confidence*100)}%)")
+                print(
+                    f"🚨 INTRUSION STARTED! (Session: {intrusion_session_id}, Confidence: {int(confidence*100)}%)"
+                )
 
                 # A. Send Alert
                 if is_connected:
@@ -377,9 +443,10 @@ while True:
                 # B. Start Video
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 video_filename = f"intruder_{timestamp}.mp4"
+                video_path = os.path.join(RECORDINGS_DIR, video_filename)
                 video_writer = cv2.VideoWriter(
-                    os.path.join(RECORDINGS_DIR, video_filename),
-                    cv2.VideoWriter_fourcc(*'mp4v'),
+                    video_path,
+                    cv2.VideoWriter_fourcc(*"avc1"),
                     20.0,
                     (640, 480),
                 )
@@ -389,11 +456,12 @@ while True:
                 still_filename = f"evidence_{timestamp}_start.jpg"
                 still_path = os.path.join(RECORDINGS_DIR, still_filename)
                 cv2.imwrite(still_path, frame)
-                
+
                 print(f"📁 Saved to SD Card: {still_filename}")
-                
+
                 # Queue for robust upload
                 save_to_pending(still_path, "image")
+                save_to_pending(video_path, "video")
 
                 print("3. Passing to Background Uploader...")
 
@@ -415,10 +483,10 @@ while True:
                 still_filename = f"evidence_{timestamp}_update.jpg"
                 still_path = os.path.join(RECORDINGS_DIR, still_filename)
                 cv2.imwrite(still_path, frame)
-                
+
                 # Queue for robust upload
                 save_to_pending(still_path, "image")
-                
+
                 last_still_capture_time = current_time
 
             # D. END CONDITIONS & AI RECHECK LOGIC
@@ -433,25 +501,30 @@ while True:
                 print("🔍 No motion for 10s - Running AI recheck...")
                 person_still_present, confidence = check_ai_for_person(frame)
                 last_ai_recheck_time = current_time
-                
+
                 if person_still_present:
-                    print(f"✅ Person still detected! (Confidence: {int(confidence*100)}%) - Continuing monitoring")
-                    last_motion_time = current_time  # Reset motion timer to keep recording
+                    print(
+                        f"✅ Person still detected! (Confidence: {int(confidence*100)}%) - Continuing monitoring"
+                    )
+                    last_motion_time = (
+                        current_time  # Reset motion timer to keep recording
+                    )
                     # Take an additional still image as evidence
                     timestamp = datetime.datetime.now().strftime("%H-%M-%S")
                     still_filename = f"evidence_{timestamp}_recheck.jpg"
                     still_path = os.path.join(RECORDINGS_DIR, still_filename)
                     cv2.imwrite(still_path, frame)
-                    
+
                     # Queue for robust upload
                     save_to_pending(still_path, "image")
                 else:
-                    print("❌ Person no longer detected - Will end intrusion if no motion for another 10s")
+                    print(
+                        "❌ Person no longer detected - Will end intrusion if no motion for another 10s"
+                    )
 
             # END INTRUSION: Max time OR person gone after recheck
-            if (
-                recording_duration > MAX_VIDEO_LENGTH
-                or (time_since_motion > 20 and time_since_ai_recheck > 10)
+            if recording_duration > MAX_VIDEO_LENGTH or (
+                time_since_motion > 20 and time_since_ai_recheck > 10
             ):
                 # STATE TRANSITION: END INTRUSION
                 print(f"⏹️ INTRUSION ENDED. (Duration: {int(recording_duration)}s)")
@@ -462,7 +535,9 @@ while True:
                 # Upload video to GridFS
                 if video_filename:
                     print(f"📁 Saved to SD Card: {video_filename}")
-                    save_to_pending(os.path.join(RECORDINGS_DIR, video_filename), "video")
+                    save_to_pending(
+                        os.path.join(RECORDINGS_DIR, video_filename), "video"
+                    )
 
                 if is_connected:
                     reason = (
