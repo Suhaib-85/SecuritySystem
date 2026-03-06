@@ -217,6 +217,24 @@ def attempt_upload(pending_file):
 
     try:
         with open(pending_file["filepath"], "rb") as f:
+
+            # 1. Safely grab ID (fallback to global, then fallback to "unknown")
+            current_session = (
+                pending_file.get("sessionId") or intrusion_session_id or "unknown"
+            )
+
+            # 2. Safely grab timestamp (fallback to right now if missing)
+            edge_timestamp = (
+                pending_file.get("timestamp") or datetime.datetime.now().isoformat()
+            )
+
+            # 3. Standard requests format (Requests inherently puts 'data' before 'files')
+            data = {
+                "sessionId": current_session,
+                "fileType": pending_file["type"],
+                "edgeTimestamp": edge_timestamp,
+            }
+
             files = {
                 "video": (
                     pending_file["filename"],
@@ -224,54 +242,41 @@ def attempt_upload(pending_file):
                     "video/mp4" if pending_file["type"] == "video" else "image/jpeg",
                 )
             }
-            data = {
-                "sessionId": intrusion_session_id,
-                "fileType": pending_file["type"],
-                "edgeTimestamp": pending_file.get(
-                    "timestamp", "datetime.datetime.now().isoformat()"
-                ),
-            }
+
             headers = {"Authorization": f"Bearer {SECRET_KEY}"}
 
-            # Enhanced configuration for large files
             response = requests.post(
                 f"{SERVER_URL}/api/upload",
-                files=files,
-                data=data,
+                data=data,  # Text goes first
+                files=files,  # File goes last
                 headers=headers,
                 timeout=120,
-                stream=True,  # Enable streaming for large files
+                stream=True,
             )
 
         pending_file["attempts"] += 1
 
         if response.status_code == 201:
             print(f"🧹 [SWEEPER] Upload Success: {pending_file['filename']}")
-            # Remove from pending list and delete local file
             os.remove(pending_file["filepath"])
             pending_uploads.remove(pending_file)
             return True
         else:
-            error_msg = f"[SWEEPER] Upload failed for {pending_file['filename']} | Reason: {response.status_code} - {response.text} (Will retry later)"
+            error_msg = f"[SWEEPER] Upload failed for {pending_file['filename']} | Reason: {response.status_code} - {response.text}"
             if error_msg != last_error_message:
                 print(f"❌ {error_msg}")
                 last_error_message = error_msg
             return False
+
     except requests.exceptions.ConnectionError as err:
-        # Silent retry for connection refused errors
-        if err.errno == 61:  # ECONNREFUSED
-            pass  # Don't log connection refused errors
+        if err.errno == 61:
+            pass
         else:
-            error_msg = f"[SWEEPER] Connection error for {pending_file['filename']}: {err} (Will retry later)"
-            if error_msg != last_error_message:
-                print(f"❌ {error_msg}")
-                last_error_message = error_msg
+            print(f"❌ [SWEEPER] Connection error for {pending_file['filename']}")
         return False
+
     except Exception as e:
-        error_msg = f"[SWEEPER] Upload error (attempt {pending_file['attempts']}) for {pending_file['filename']}: {e}"
-        if error_msg != last_error_message:
-            print(f"❌ {error_msg}")
-            last_error_message = error_msg
+        print(f"❌ [SWEEPER] Upload error for {pending_file['filename']}: {e}")
         return False
 
 
@@ -432,10 +437,15 @@ while True:
                     f"🚨 INTRUSION STARTED! (Session: {intrusion_session_id}, Confidence: {int(confidence*100)}%)"
                 )
 
-                # A. Send Alert
+                # A. Send Alert (UPDATED WITH SESSION ID)
                 if is_connected:
                     sio.emit(
-                        "pi_alert", {"message": "Person detected! Recording started."}
+                        "pi_alert",
+                        {
+                            "message": "Person detected! Recording started.",
+                            "location": "Front Cam (Hardware)",  # Added location
+                            "sessionId": intrusion_session_id,  # <-- THIS BANISHES 'UNKNOWN'
+                        },
                     )
                 else:
                     print("Alert dropped (No socket connection)")
@@ -461,7 +471,6 @@ while True:
 
                 # Queue for robust upload
                 save_to_pending(still_path, "image")
-                save_to_pending(video_path, "video")
 
                 print("3. Passing to Background Uploader...")
 
@@ -539,13 +548,21 @@ while True:
                         os.path.join(RECORDINGS_DIR, video_filename), "video"
                     )
 
+                # (UPDATED WITH SESSION ID)
                 if is_connected:
                     reason = (
                         "Max time reached"
                         if recording_duration > MAX_VIDEO_LENGTH
                         else "Motion stopped"
                     )
-                    sio.emit("pi_alert", {"message": f"Intrusion ended. ({reason})"})
+                    sio.emit(
+                        "pi_alert",
+                        {
+                            "message": f"Intrusion ended. ({reason})",
+                            "location": "Front Cam (Hardware)",
+                            "sessionId": intrusion_session_id,  # <-- KEEPS THE END ALERT IN THE SAME SESSION
+                        },
+                    )
 
     # --- DASHBOARD OVERLAY ---
     status_text = "ARMED" if is_system_armed else "DISARMED"

@@ -54,7 +54,9 @@ export const setupSocketLogic = (io) => {
             const newAlert = new Event({
                 type: 'alert',
                 message: data.message || "Motion Detected: Intruder Alert",
-                timestamp: new Date()
+                location: data.location || "Unknown location",
+                sessionId: data.sessionId || 'Unknown session',
+                timestamp: Date.now()
             });
 
             try {

@@ -70,8 +70,8 @@ async function attemptUpload(filename) {
         // --- NEW METADATA LOGIC ---
         // Extract the exact creation time of the local file
         const stats = fs.statSync(filepath);
-        const edgeTimestamp = stats.mtime.toISOString();
-        const sessionId = `mock_session_${stats.mtimeMs}`; // Generate a unique session ID
+        const edgeTimestamp = new Date().toISOString();
+        const sessionId = filename.includes('___') ? filename.split('___')[0] : `mock_session_${Date.now()}`; // Generate a unique session ID
 
         const isImage = filename.toLowerCase().endsWith('.jpg') || filename.toLowerCase().endsWith('.png');
         const fileType = isImage ? 'image' : 'video';
@@ -128,9 +128,15 @@ async function triggerMotionSequence() {
 
     console.log("\n--- MOTION DETECTED ---");
 
+    const currentSessionId = `mock_session_${Date.now()}`;
+
     console.log("1. Sending Instant Alert...");
     if (socket.connected) {
-        socket.emit("pi_alert", { location: "Simulated Cam" });
+        socket.emit("pi_alert",
+            {
+                location: "Simulated Cam",
+                sessionId: currentSessionId
+            });
     } else {
         console.log("Alert dropped (No socket connection)");
     }
@@ -138,7 +144,7 @@ async function triggerMotionSequence() {
     console.log("2. Recording Video locally...");
     const isoTimestamp = new Date().toISOString();
     const safeTimestamp = isoTimestamp.replace(/[:.]/g, '-');
-    const newFilename = `recording_${safeTimestamp}.mp4`;
+    const newFilename = `${currentSessionId}___recording_${safeTimestamp}.mp4`;
     const newFilepath = path.join(PENDING_DIR, newFilename);
 
     if (fs.existsSync(ASSET_SOURCE)) {
