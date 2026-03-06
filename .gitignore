@@ -2,26 +2,23 @@
 backend/node_modules/
 backend/npm-debug.log
 backend/yarn-error.log
-backend/logs/
-backend/pids/
 backend/*.pid
 backend/*.seed
 backend/*.pid.lock
 
 # --- 2. Environment Variables (CRITICAL) ---
 # Never commit your database URI or JWT secrets
-backend/.env
-.env
+*.env
 
 # --- 3. Python Edge Device ---
-edge_device/__pycache__/
+__pycache__/
 edge_device/*.pyc
 edge_device/venv/
 edge_device/.venv/
-edge_device/env/
 
 # --- 4. Documentation ---
-docs/
+docs/*.txt
+docs/*.pdf
 
 # --- 5. AI Models & Large Assets ---
 # You can comment out the next line if you WANT to commit the model (it's only 6MB)
@@ -30,23 +27,11 @@ docs/
 
 # --- 6. Media & Evidence ---
 # Ignore heavy video files anywhere in the project
-assets/*.mp4
 *.mp4
-*.h264
-*.avi
-evidence_*.mp4
-
-# Ignore evidence recordings and pending uploads
-edge_device/recordings/
-edge_device/pending_uploads/
-evidence_*.jpg
-evidence_*.png
+*.jpg
 
 # --- 7. Uploads & Temporary Storage ---
-backend/uploads/*
-!backend/uploads/.gitkeep
-backend/test_tools/uploads/*
-!backend/test_tools/uploads/.gitkeep
+!**/.gitkeep
 
 # --- 7. OS & Editor Files ---
 .DS_Store
@@ -55,3 +40,10 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+$RECYCLE.BIN/
+
+# Catch all log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
