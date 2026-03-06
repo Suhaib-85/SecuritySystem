@@ -136,6 +136,7 @@
     </div>
 
     <button onclick="toggleSystem()">Toggle System Power</button>
+    <button onclick="window.location.href='/gallery.html'" style="background: #28a745; margin-left: 10px;">📸 View Gallery</button>
 
     <h3>Event History (From MongoDB)</h3>
     <div id="log"></div>
@@ -188,17 +189,24 @@
             const entry = document.createElement('div');
             const time = new Date(event.timestamp).toISOString();
 
-            if (event.type === 'video') {
+            // Only show intrusion start/end alerts, not upload notifications
+            if (event.type === 'alert') {
+                entry.className = 'entry alert';
+                entry.innerHTML = `<span><strong>${time}:</strong> ${event.message || "Person Detected"}</span>`;
+            } else if (event.type === 'video' && event.message.includes('Recording Uploaded')) {
+                // Skip video upload notifications
+                return;
+            } else if (event.type === 'image' && event.message.includes('Still Image Captured')) {
+                // Skip image upload notifications  
+                return;
+            } else {
                 entry.className = 'entry video';
                 entry.innerHTML = `
-                    <span><strong>${time}:</strong> Video Evidence Uploaded</span>
+                    <span><strong>${time}:</strong> ${event.message}</span>
                     <a href="/video.html?id=${event.videoId}&name=${event.filename}" class="video-btn">
                         Watch Playback
                     </a>
                 `;
-            } else {
-                entry.className = 'entry alert';
-                entry.innerHTML = `<span><strong>${time}:</strong> ${event.message || "Person Detected"}</span>`;
             }
 
             logDiv.prepend(entry);

@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <script>
+        const token = localStorage.getItem('token');
+        if (!token) {
+            window.location.href = '/login.html';
+        }
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Intrusion Gallery</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body {
+            margin: 0;
+            background: #1a1a1a;
+            color: white;
+            font-family: 'Segoe UI', sans-serif;
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 10px;
+        }
+
+        h2 {
+            margin: 0;
+            color: #44aaff;
+        }
+
+        .back-btn {
+            background: #333;
+            color: white;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+
+        .back-btn:hover {
+            background: #555;
+        }
+
+        .session-container {
+            margin-bottom: 40px;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 20px;
+            background: #2a2a2a;
+        }
+
+        .session-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #555;
+        }
+
+        .session-title {
+            color: #ffaa44;
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+
+        .session-time {
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        .media-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .media-item {
+            background: #333;
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            position: relative;
+        }
+
+        .media-item:hover {
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+        }
+
+        .media-item img {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+        }
+
+        .media-item.video {
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 150px;
+        }
+
+        .video-icon {
+            font-size: 3rem;
+            color: #44aaff;
+        }
+
+        .media-info {
+            padding: 10px;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+
+        .media-type {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }
+
+        .no-sessions {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }
+
+        /* Modal for focused view */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+        }
+
+        .modal-content {
+            position: relative;
+            margin: 5% auto;
+            padding: 20px;
+            width: 90%;
+            max-width: 1000px;
+            background: #1a1a1a;
+            border-radius: 8px;
+        }
+
+        .close {
+            position: absolute;
+            right: 20px;
+            top: 20px;
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .close:hover {
+            color: white;
+        }
+
+        .focused-media {
+            width: 100%;
+            max-height: 80vh;
+            object-fit: contain;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h2>📸 Intrusion Evidence Gallery</h2>
+        <a href="/index.html" class="back-btn">← Back to Dashboard</a>
+    </div>
+
+    <div id="sessionsContainer" class="loading">
+        Loading intrusion sessions...
+    </div>
+
+    <!-- Modal for focused media view -->
+    <div id="mediaModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <div id="focusedMediaContainer"></div>
+        </div>
+    </div>
+
+    <script>
+        const authToken = localStorage.getItem('token');
+        const modal = document.getElementById('mediaModal');
+        const closeBtn = document.getElementsByClassName('close')[0];
+
+        async function loadSessions() {
+            try {
+                const res = await fetch('/api/events', {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+
+                if (res.status === 401 || res.status === 400) {
+                    localStorage.removeItem('token');
+                    window.location.href = '/login.html';
+                    return;
+                }
+
+                const events = await res.json();
+                displaySessions(events);
+            } catch (err) {
+                console.error("Failed to load sessions:", err);
+                document.getElementById('sessionsContainer').innerHTML = 
+                    '<div class="no-sessions">Error loading sessions</div>';
+            }
+        }
+
+        function displaySessions(events) {
+            const container = document.getElementById('sessionsContainer');
+            
+            if (events.length === 0) {
+                container.innerHTML = '<div class="no-sessions">No intrusion sessions found</div>';
+                return;
+            }
+
+            // Group events by sessionId
+            const sessions = {};
+            events.forEach(event => {
+                const sessionId = event.sessionId || 'unknown';
+                if (!sessions[sessionId]) {
+                    sessions[sessionId] = {
+                        id: sessionId,
+                        events: [],
+                        firstTimestamp: event.timestamp
+                    };
+                }
+                sessions[sessionId].events.push(event);
+            });
+
+            // Sort sessions by timestamp (newest first)
+            const sortedSessions = Object.values(sessions).sort((a, b) => 
+                new Date(b.firstTimestamp) - new Date(a.firstTimestamp)
+            );
+
+            // Display sessions
+            container.innerHTML = sortedSessions.map(session => `
+                <div class="session-container">
+                    <div class="session-header">
+                        <div>
+                            <div class="session-title">Session: ${session.id}</div>
+                            <div class="session-time">${new Date(session.firstTimestamp).toLocaleString()}</div>
+                        </div>
+                    </div>
+                    <div class="media-grid">
+                        ${session.events.map(event => createMediaItem(event)).join('')}
+                    </div>
+                </div>
+            `).join('');
+
+            // Add click handlers
+            document.querySelectorAll('.media-item').forEach(item => {
+                item.addEventListener('click', function() {
+                    const type = this.dataset.type;
+                    const id = this.dataset.id;
+                    const filename = this.dataset.filename;
+                    showFocusedMedia(type, id, filename);
+                });
+            });
+        }
+
+        function createMediaItem(event) {
+            if (event.fileType === 'video') {
+                return `
+                    <div class="media-item video" data-type="video" data-id="${event.videoId}" data-filename="${event.filename}">
+                        <div class="media-type">VIDEO</div>
+                        <div class="video-icon">🎥</div>
+                        <div class="media-info">${event.filename}</div>
+                    </div>
+                `;
+            } else if (event.fileType === 'image') {
+                return `
+                    <div class="media-item" data-type="image" data-id="${event.videoId}" data-filename="${event.filename}">
+                        <div class="media-type">IMAGE</div>
+                        <img src="/video/${event.videoId}?token=${authToken}" alt="${event.filename}" loading="lazy">
+                        <div class="media-info">${event.filename}</div>
+                    </div>
+                `;
+            }
+            return '';
+        }
+
+        function showFocusedMedia(type, id, filename) {
+            const container = document.getElementById('focusedMediaContainer');
+            
+            if (type === 'video') {
+                container.innerHTML = `
+                    <h3>${filename}</h3>
+                    <video controls autoplay class="focused-media">
+                        <source src="/video/${id}?token=${authToken}" type="video/mp4">
+                        Your browser does not support video tag.
+                    </video>
+                `;
+            } else if (type === 'image') {
+                container.innerHTML = `
+                    <h3>${filename}</h3>
+                    <img src="/video/${id}?token=${authToken}" alt="${filename}" class="focused-media">
+                `;
+            }
+            
+            modal.style.display = 'block';
+        }
+
+        closeBtn.onclick = function() {
+            modal.style.display = 'none';
+        }
+
+        window.onclick = function(event) {
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        loadSessions();
+    </script>
+</body>
+
+</html>

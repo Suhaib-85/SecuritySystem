@@ -5,7 +5,9 @@ const eventSchema = new mongoose.Schema({
     type: { type: String, required: true },
     message: String,
     videoId: mongoose.Schema.Types.ObjectId,
-    filename: String
+    filename: String,
+    sessionId: String,
+    fileType: String
 });
 
 export default mongoose.model('Event', eventSchema);
