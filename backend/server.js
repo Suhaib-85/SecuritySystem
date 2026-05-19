@@ -1,6 +1,7 @@
 import { setServers } from 'dns';
 setServers(['8.8.8.8', '8.8.4.4']);
 
+import { errorHandler } from './src/middleware/errorHandler.js';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -20,17 +21,40 @@ const app = express();
 const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
-    cors: { origin: "*" }
+    cors: { origin: ["http://localhost:5173", "http://localhost:3000"] }
 });
 
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors());
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", "'unsafe-inline'"], // Required for React
+            styleSrc: ["'self'", "'unsafe-inline'"],  // Required for Tailwind
+            imgSrc: ["'self'", "data:", "blob:"],
+            connectSrc: ["'self'"],
+            mediaSrc: ["'self'", "blob:"],            // Required for WebM playback
+        }
+    }
+}));
+
+app.use(cors({
+    origin: ["http://localhost:3000", "http://localhost:5173"],
+    methods: ["GET", "POST"],
+    credentials: true
+}));
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.set('socketio', io);
 
 app.use('/api', apiRoutes);
+
+app.get(/.*/, (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.use(errorHandler);
 
 const startServer = async () => {
     try {

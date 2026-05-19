@@ -6,49 +6,52 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { login } from '../controllers/authController.js';
-import { getEvents } from '../controllers/eventController.js';
+import { getEvents, updateEventStatus, deleteEvent } from '../controllers/eventController.js';
 import { uploadVideo, streamVideo } from '../controllers/videoController.js';
 import { verifyToken } from '../middleware/auth.js';
 
 const router = express.Router();
-
-// --- DISK STORAGE CONFIGURATION ---
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMP_UPLOAD_DIR = path.join(__dirname, '../temp_uploads');
 
-// Ensure the temporary directory exists when the server starts
-if (!fs.existsSync(TEMP_UPLOAD_DIR)) {
-    fs.mkdirSync(TEMP_UPLOAD_DIR, { recursive: true });
-}
+if (!fs.existsSync(TEMP_UPLOAD_DIR)) fs.mkdirSync(TEMP_UPLOAD_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, TEMP_UPLOAD_DIR);
-    },
-    filename: (req, file, cb) => {
-        // Keep the temporary filename unique to prevent overlaps
-        cb(null, `temp_${Date.now()}_${file.originalname}`);
+    destination: (req, file, cb) => cb(null, TEMP_UPLOAD_DIR),
+    filename: (req, file, cb) => cb(null, `temp_${Date.now()}_${file.originalname}`)
+});
+
+const upload = multer({
+    storage,
+    limits: { fileSize: 13 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        if (['video/webm', 'video/mp4', 'image/jpeg', 'image/png'].includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error(`Forbidden payload mimetype: ${file.mimetype}`));
+        }
     }
 });
 
-const upload = multer({ storage });
-// ----------------------------------
+const apiLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 150, message: { error: "API rate limit reached." } });
+const uploadLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 45, message: { error: "Upload velocity threshold reached." } });
 
-const loginLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5,
-    message: { error: "Too many login attempts. System locked for 15 minutes." }
+// SPECIALIZED MEDIA STREAM LIMITER (Prevents HTML5 429 Errors)
+const videoStreamLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000,
+    max: 2500,
+    message: { error: "Streaming buffer limits reached." }
 });
 
-router.post('/login', loginLimiter, login);
-router.get('/events', verifyToken, getEvents);
-
-router.post('/upload', verifyToken, upload.single('video'), (req, res) => {
-    const io = req.app.get('socketio');
-    uploadVideo(req, res, io);
+router.post('/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 5 }), login);
+router.get('/events', verifyToken, apiLimiter, getEvents);
+router.patch('/events/:id/status', verifyToken, apiLimiter, updateEventStatus);
+router.delete('/events/:id', verifyToken, apiLimiter, deleteEvent);
+router.post('/upload', verifyToken, uploadLimiter, upload.single('video'), (req, res, next) => {
+    uploadVideo(req, res, req.app.get('socketio')).catch(next);
 });
-
-router.get('/video/:id', streamVideo);
+router.get('/video/:id', videoStreamLimiter, (req, res, next) => {
+    streamVideo(req, res).catch(next);
+});
 
 export default router;

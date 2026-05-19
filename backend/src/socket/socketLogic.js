@@ -3,8 +3,6 @@ import Event from '../models/Event.js';
 import Device from '../models/Device.js';
 import crypto from 'crypto';
 
-let SYSTEM_ACTIVE = false;
-
 export const setupSocketLogic = (io) => {
 
     io.use(async (socket, next) => {
@@ -31,23 +29,35 @@ export const setupSocketLogic = (io) => {
         }
     });
 
-    io.on('connection', (socket) => {
+    io.on('connection', async (socket) => {
         const deviceType = socket.isPi ? "RASPBERRY PI" : "ADMIN DASHBOARD";
         console.log(`[CONN] ${deviceType} connected (ID: ${socket.id})`);
 
-        socket.emit('state_update', { isActive: SYSTEM_ACTIVE });
+        const device = await Device.findOne({ deviceId: 'pi_camera_front' });
+        if (device) {
+            socket.emit('state_update', { isActive: device.isActive });
+        }
 
-        socket.on('toggle_system', (data) => {
+        socket.on('toggle_system', async (data) => {
             if (socket.isPi) return;
 
-            SYSTEM_ACTIVE = data.isActive;
-            console.log(`[POWER] System set to: ${SYSTEM_ACTIVE ? 'ARMED' : 'DISARMED'}`);
+            // Added upsert to create the device if it doesn't exist, and fixed the deprecation warning
+            const updatedDevice = await Device.findOneAndUpdate(
+                { deviceId: 'pi_camera_front' },
+                { isActive: data.isActive },
+                { returnDocument: 'after', upsert: true }
+            );
 
-            io.emit('state_update', { isActive: SYSTEM_ACTIVE });
+            console.log(`[POWER] System set to: ${updatedDevice.isActive ? 'ARMED' : 'DISARMED'}`);
+            io.emit('state_update', { isActive: updatedDevice.isActive });
         });
 
         socket.on('pi_alert', async (data) => {
-            if (!SYSTEM_ACTIVE) return;
+            // VERIFY ON ALERT: Check the database to ensure we are actually armed
+            const currentDevice = await Device.findOne({ deviceId: 'pi_camera_front' });
+
+            // If the device isn't found, or if it is currently disarmed, ignore the alert
+            if (!currentDevice || !currentDevice.isActive) return;
 
             console.log(`[ALERT] Motion Detected! Logging to Database...`);
 
@@ -56,7 +66,10 @@ export const setupSocketLogic = (io) => {
                 message: data.message || "Motion Detected: Intruder Alert",
                 location: data.location || "Unknown location",
                 sessionId: data.sessionId || 'Unknown session',
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                deviceId: socket.device ? socket.device.deviceId : 'pi_camera_front',
+                severity: 'alert',
+                status: 'new'
             });
 
             try {

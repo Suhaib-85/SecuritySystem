@@ -9,6 +9,7 @@ backend/*.pid.lock
 # --- 2. Environment Variables (CRITICAL) ---
 # Never commit your database URI or JWT secrets
 *.env
+*.local
 
 # --- 3. Python Edge Device ---
 __pycache__/
@@ -32,18 +33,35 @@ docs/*.pdf
 
 # --- 7. Uploads & Temporary Storage ---
 !**/.gitkeep
+# Ignore local JSON metadata sidecar files on the edge device
+edge_device/pending_uploads/*.json
+edge_device/recordings/*.json
 
-# --- 7. OS & Editor Files ---
+# --- 8. React Frontend (Vite) ---
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+
+# --- 9. OS & Editor Files ---
 .DS_Store
 Thumbs.db
 desktop.ini
 .vscode/
+!.vscode/extensions.json
 .idea/
 *.swp
+*.sw?
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
 $RECYCLE.BIN/
 
-# Catch all log files
+# --- 10. Catch-all Log Files ---
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
