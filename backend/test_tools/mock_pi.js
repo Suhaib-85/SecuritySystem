@@ -7,22 +7,25 @@ import axios from 'axios';
 import FormData from 'form-data';
 import dotenv from 'dotenv';
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 const SERVER_URL = 'http://localhost:3000';
 const ASSET_SOURCE = path.join(__dirname, '..', '..', 'assets', 'sample.mp4');
 const PENDING_DIR = path.join(__dirname, 'pending_uploads');
 
-if (!fs.existsSync(PENDING_DIR)) fs.mkdirSync(PENDING_DIR);
+if (!fs.existsSync(PENDING_DIR)) fs.mkdirSync(PENDING_DIR, { recursive: true });
 
 const HARDWARE_SECRET = process.env.PI_SECRET;
 const socket = io(SERVER_URL, { reconnection: true, auth: { token: HARDWARE_SECRET } });
 
 let isSystemActive = false;
 console.log("Mock Pi simulation engine ready...");
+
+const activeUploads = new Set();
+let isProcessingQueue = false; // Prevents worker race conditions
 
 socket.on("state_update", (data) => {
     isSystemActive = data.isActive;
@@ -33,7 +36,7 @@ async function attemptUpload(filename) {
     const filepath = path.join(PENDING_DIR, filename);
     try {
         const form = new FormData();
-        const edgeTimestamp = new Date().toISOString(); // Native clean target
+        const edgeTimestamp = new Date().toISOString();
         const sessionId = filename.includes('___') ? filename.split('___')[0] : `mock_${Date.now()}`;
         const fileType = filename.toLowerCase().endsWith('.jpg') ? 'image' : 'video';
 
@@ -48,19 +51,43 @@ async function attemptUpload(filename) {
 
         if (res.status === 201) {
             console.log(`[SWEEPER] Uploaded Successfully: ${filename}`);
-            fs.unlinkSync(filepath);
+            if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
         }
     } catch (err) {
-        console.log(`[SWEEPER] Upload failed: ${err.message}`);
+        const status = err.response?.status ? `(Status: ${err.response.status})` : '';
+        const serverError = err.response?.data?.error ? `-> ${err.response.data.error}` : '';
+        console.log(`[SWEEPER] Upload failed ${status}: ${err.message} ${serverError}`);
+    } finally {
+        activeUploads.delete(filename);
     }
 }
 
-setInterval(async () => {
-    const pendingFiles = fs.readdirSync(PENDING_DIR);
-    if (pendingFiles.length > 0) {
-        for (const file of pendingFiles) await attemptUpload(file);
+// 🚀 REACTIVE QUEUE WORKER (No Timers, Zero CPU Overhead)
+async function wakeSweeper() {
+    if (isProcessingQueue) return; // Guard clause: if the worker is already running, do nothing
+    isProcessingQueue = true;
+
+    try {
+        let files = fs.readdirSync(PENDING_DIR);
+        let pendingFiles = files.filter(file => !file.startsWith('.') && !activeUploads.has(file));
+
+        // Keep draining the directory until no deployable assets remain
+        while (pendingFiles.length > 0) {
+            for (const file of pendingFiles) {
+                console.log(`⚡ Instant lock & transmit initiated for: ${file}`);
+                activeUploads.add(file);
+                await attemptUpload(file);
+            }
+            // Re-read directory to verify if new files landed while we were uploading
+            files = fs.readdirSync(PENDING_DIR);
+            pendingFiles = files.filter(file => !file.startsWith('.') && !activeUploads.has(file));
+        }
+    } catch (err) {
+        console.log(`[WORKER ERROR]: ${err.message}`);
+    } finally {
+        isProcessingQueue = false; // Put worker back to sleep
     }
-}, 10000);
+}
 
 async function triggerMotionSequence() {
     if (!isSystemActive) return console.log("Motion ignored (System Disarmed)");
@@ -74,8 +101,14 @@ async function triggerMotionSequence() {
     if (fs.existsSync(ASSET_SOURCE)) {
         fs.copyFileSync(ASSET_SOURCE, path.join(PENDING_DIR, newFilename));
         console.log(`Saved virtual capture: ${newFilename}`);
+
+        // 🔥 SIGNAL WAKEUP: Trigger processing the exact millisecond the file copy completes
+        wakeSweeper();
     }
 }
+
+// 🏁 BOOTSTRAP: Clear out backlog immediately on startup, then sit at 0% CPU
+wakeSweeper();
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 rl.on('line', () => triggerMotionSequence());
