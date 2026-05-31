@@ -62,3 +62,6 @@ jobs:
         cd backend/test
         chmod +x run_tests.sh
         ./run_tests.sh
+
+    - name: Debug deprecations
+      run: node --trace-deprecation backend/server.js
