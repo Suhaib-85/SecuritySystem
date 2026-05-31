@@ -10,8 +10,8 @@ node test_suite.js
 
 echo "------------------------------------------------"
 echo "Phase 2: Validating Edge Layer AI Inference Thresholds"
-# Step out of backend/test to the root directory, then enter edge_device
-cd ../../edge_device
+# 🚀 FIXED PATH: Step out of backend/test to root, then enter edge_device/test
+cd ../../edge_device/test
 python test_suite.py
 
 echo "------------------------------------------------"
