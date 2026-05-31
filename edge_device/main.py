@@ -7,37 +7,23 @@ import threading
 import datetime
 import requests
 import json
-import argparse
 import sys
+import shutil
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# --- CLI ARGUMENT PARSING FOR TEST CASES ---
-parser = argparse.ArgumentParser(description="Intelligent Edge Security System Core")
-parser.add_argument(
-    "--test",
-    type=int,
-    choices=[1, 2, 3],
-    help="Run a deterministic test profile (1: Quick Peek, 2: Ghost, 3: False Positive)",
-)
-args = parser.parse_args()
-
-SIMULATION_MODE = args.test is not None
-TEST_PROFILE = args.test
 
 # --- CONFIGURATION ---
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:3000")
 SECRET_KEY = os.getenv("PI_API_KEY")
 
-if not SECRET_KEY and not SIMULATION_MODE:
-    raise ValueError("FATAL: PI_API_KEY must be set in .env file")
+if not SECRET_KEY:
+    raise ValueError("FATAL: PI_API_KEY must be set in the environment profile")
 
 CONFIDENCE_THRESHOLD = 0.50
 MAX_VIDEO_LENGTH = 60
 TARGET_FPS = 10.0
 FRAME_INTERVAL = 1.0 / TARGET_FPS
-STILL_IMAGE_INTERVAL = 30
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(CURRENT_DIR, "model")
@@ -46,12 +32,13 @@ PENDING_DIR = os.path.join(CURRENT_DIR, "pending_uploads")
 MODEL_PATH = os.path.join(MODEL_DIR, "ssd_mobilenet_v2_coco_quant_postprocess.tflite")
 LABEL_PATH = os.path.join(MODEL_DIR, "coco_labels.txt")
 
+# Ensure required operating directories exist locally
 for folder in [RECORDINGS_DIR, PENDING_DIR]:
     if not os.path.exists(folder):
         os.makedirs(folder)
 
-# --- GLOBAL STATE ---
-is_system_armed = True if SIMULATION_MODE else False
+# --- GLOBAL ARCHITECTURE STATE ---
+is_system_armed = False  # Controlled dynamically via dashboard WebSockets
 is_connected = False
 intrusion_active = False
 MAX_UPLOAD_LIMIT = 5
@@ -70,11 +57,11 @@ confidence_sum = 0.0
 
 intrusion_start_time = 0
 last_motion_time = 0
-last_still_capture_time = 0
 last_ai_recheck_time = 0
 video_writer = None
 video_filename = ""
 intrusion_session_id = ""
+session_chunk_counter = 1
 last_intrusion_end = 0
 INTRUSION_COOLDOWN = 5
 
@@ -82,16 +69,7 @@ pending_uploads = []
 is_sweeping = False
 last_error_message = ""
 
-# --- SIMULATION TIME TRACKING ---
-simulated_clock = 0.0
-
-
-def get_current_time():
-    global simulated_clock
-    return simulated_clock if SIMULATION_MODE else time.time()
-
-
-# --- NETWORK MANAGER ---
+# --- NETWORK CORE (SOCKET.IO OVER WebSockets) ---
 sio = socketio.Client(reconnection=True, reconnection_attempts=0, reconnection_delay=1)
 
 
@@ -100,8 +78,10 @@ def connect():
     global is_connected, last_error_message
     is_connected = True
     last_error_message = ""
-    print(f"\n✅ NETWORK: Connected! ID: {sio.sid}")
+    print(f"\n✅ NETWORK: Connected successfully. Session ID: {sio.sid}")
     sio.emit("register_pi", {"token": SECRET_KEY})
+
+    # Flush alert cache generated during network dropouts
     for alert in missed_alerts:
         sio.emit("pi_alert", alert)
     missed_alerts.clear()
@@ -111,7 +91,7 @@ def connect():
 def disconnect():
     global is_connected
     is_connected = False
-    print(f"\n❌ NETWORK: Disconnected. Waiting for server...")
+    print("\n❌ NETWORK: Dropped connection interface. Re-establishing channel...")
 
 
 @sio.event
@@ -127,14 +107,14 @@ def state_update(data):
     global is_system_armed, arm_timestamp
     new_state = data.get("isActive", False)
     if new_state and not is_system_armed:
-        arm_timestamp = get_current_time()
+        arm_timestamp = time.time()
     is_system_armed = new_state
-    print(f"🔄 STATE: System is now {'ARMED 🔴' if is_system_armed else 'DISARMED 🟢'}")
+    print(
+        f"🔄 STATE: System telemetry synchronized to: {'ARMED 🔴' if is_system_armed else 'DISARMED 🟢'}"
+    )
 
 
 def network_loop():
-    if SIMULATION_MODE:
-        return
     while True:
         if not sio.connected:
             try:
@@ -152,47 +132,40 @@ def network_loop():
 
 threading.Thread(target=network_loop, daemon=True).start()
 
-# --- AI RUNTIME ---
-interpreter = None
-labels = []
-if not SIMULATION_MODE:
+# --- OPTIMIZED AI RUNTIME INITIALIZATION ---
+try:
+    import ai_edge_litert.interpreter as litert_interpreter
+
+    interpreter_class = litert_interpreter.Interpreter
+    print("🧠 AI ENGINE: Native Google LiteRT Runtime successfully bound.")
+except ImportError:
     try:
-        import ai_edge_litert.interpreter as litert_interpreter
+        import tflite_runtime.interpreter as tflite
 
-        interpreter_class = litert_interpreter.Interpreter
-        print("🧠 AI ENGINE: Successfully loaded modern LiteRT Runtime!")
+        interpreter_class = tflite.Interpreter
+        print(
+            "🧠 AI ENGINE: Falling back to legacy tflite_runtime interpreter platform."
+        )
     except ImportError:
-        try:
-            import tflite_runtime.interpreter as tflite
+        import tensorflow.lite as tflite
 
-            interpreter_class = tflite.Interpreter
-            print("🧠 AI ENGINE: Falling back to legacy tflite_runtime")
-        except ImportError:
-            import tensorflow.lite as tflite
+        interpreter_class = tflite.Interpreter
+        print(
+            "🧠 AI ENGINE: Falling back to development ecosystem standard TensorFlow Lite framework."
+        )
 
-            interpreter_class = tflite.Interpreter
-            print("🧠 AI ENGINE: Falling back to development TensorFlow Lite")
+interpreter = interpreter_class(model_path=MODEL_PATH, num_threads=2)
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+height = input_details[0]["shape"][1]
+width = input_details[0]["shape"][2]
 
-    interpreter = interpreter_class(model_path=MODEL_PATH, num_threads=2)
-    interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-    height = input_details[0]["shape"][1]
-    width = input_details[0]["shape"][2]
-
-    with open(LABEL_PATH, "r") as f:
-        labels = [line.strip() for line in f.readlines() if line.strip()]
+with open(LABEL_PATH, "r") as f:
+    labels = [line.strip() for line in f.readlines() if line.strip()]
 
 
 def check_ai_for_person(frame):
-    if SIMULATION_MODE:
-        t = get_current_time()
-        if TEST_PROFILE == 1 and t <= 5.0:
-            return True, 0.85
-        if TEST_PROFILE == 2 and t <= 15.0:
-            return True, 0.90
-        return False, 0.0
-
     start_time = time.time()
     frame_resized = cv2.resize(frame, (width, height))
     input_data = np.expand_dims(frame_resized, axis=0)
@@ -217,29 +190,20 @@ def check_ai_for_person(frame):
         object_name = (
             labels[int(classes[i])] if int(classes[i]) < len(labels) else "Unknown"
         )
+
         if object_name == "person":
             ymin, xmin, ymax, xmax = boxes[i]
             if (ymax - ymin) >= 0.1 and (xmax - xmin) >= 0.1:
                 print(
-                    f"🧠 AI Inference: {inference_time:.1f}ms (Person: {int(scores[i]*100)}%)"
+                    f"🧠 AI Inference: {inference_time:.1f}ms (Person Confirmed: {int(scores[i]*100)}%)"
                 )
                 return True, scores[i]
 
-    print(f"🧠 AI Inference: {inference_time:.1f}ms (No person detected)")
+    print(f"🧠 AI Inference: {inference_time:.1f}ms (No threat presence classified)")
     return False, 0.0
 
 
-def check_pir_simulation(current_frame, prev_frame):
-    if SIMULATION_MODE:
-        t = get_current_time()
-        if TEST_PROFILE == 1 and t <= 5.0:
-            return True
-        if TEST_PROFILE == 2 and t <= 5.0:
-            return True
-        if TEST_PROFILE == 3 and t <= 30.0:
-            return True
-        return False
-
+def check_motion_detected(current_frame, prev_frame):
     if prev_frame is None:
         return False
     gray1 = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
@@ -251,18 +215,13 @@ def check_pir_simulation(current_frame, prev_frame):
     return cv2.countNonZero(thresh) > 3000
 
 
+# --- TRANSACTIONAL STORAGE WORKERS ---
 def save_to_pending(file_path, file_type="video", session_id=None):
     try:
         filename = os.path.basename(file_path)
         pending_path = os.path.join(PENDING_DIR, filename)
 
-        if SIMULATION_MODE:
-            with open(pending_path, "w") as f:
-                f.write("mock content")
-        else:
-            import shutil
-
-            shutil.copy2(file_path, pending_path)
+        shutil.copy2(file_path, pending_path)
 
         active_session = session_id or intrusion_session_id or "unknown"
         metadata = {
@@ -279,27 +238,15 @@ def save_to_pending(file_path, file_type="video", session_id=None):
 
         with pending_lock:
             pending_uploads.append(metadata)
-        print(f"📁 Queued for upload: {filename}")
+        print(f"📁 STORAGE: Asset compiled and indexed for queue execution: {filename}")
         return True
     except Exception as e:
-        print(f"❌ Failed to queue file: {e}")
+        print(f"❌ STORAGE ERROR: Failed to stage asset for transmission: {e}")
         return False
 
 
 def attempt_upload(pending_file):
     global pending_uploads, last_error_message
-
-    if SIMULATION_MODE:
-        print(f"🧹 [SWEEPER SIMULATION] Upload Success: {pending_file['filename']}")
-        try:
-            os.remove(pending_file["filepath"])
-            os.remove(f"{pending_file['filepath']}.json")
-        except FileNotFoundError:
-            pass
-        with pending_lock:
-            if pending_file in pending_uploads:
-                pending_uploads.remove(pending_file)
-        return True
 
     try:
         with open(pending_file["filepath"], "rb") as f:
@@ -324,7 +271,9 @@ def attempt_upload(pending_file):
         json_path = f"{pending_file['filepath']}.json"
 
         if response.status_code == 201:
-            print(f"🧹 [SWEEPER] Upload Success: {pending_file['filename']}")
+            print(
+                f"🧹 SWEEPER: Transaction clear. Uploaded successfully: {pending_file['filename']}"
+            )
             os.remove(pending_file["filepath"])
             if os.path.exists(json_path):
                 os.remove(json_path)
@@ -335,7 +284,7 @@ def attempt_upload(pending_file):
         else:
             if pending_file["attempts"] >= MAX_UPLOAD_LIMIT:
                 print(
-                    f"❌ [SWEEPER] Max attempts reached for {pending_file['filename']}"
+                    f"❌ SWEEPER: Boundary limit dropped. Dropping corrupted package: {pending_file['filename']}"
                 )
                 os.remove(pending_file["filepath"])
                 if os.path.exists(json_path):
@@ -345,7 +294,7 @@ def attempt_upload(pending_file):
                         pending_uploads.remove(pending_file)
             return False
     except Exception as e:
-        print(f"❌ [SWEEPER] Error: {e}")
+        print(f"❌ SWEEPER TRANSMISSION FAILED: Network channel blocked: {e}")
         return False
 
 
@@ -364,59 +313,50 @@ def sweeper_function():
 def start_sweeper():
     def sweeper_loop():
         while True:
-            time.sleep(1 if SIMULATION_MODE else 10)
+            time.sleep(10)
             sweeper_function()
 
     threading.Thread(target=sweeper_loop, daemon=True).start()
 
 
-# --- INITIALIZATION ---
-if SIMULATION_MODE:
-    print(f"\n🚀 RUNNING SECURITY INTEGRATION TESTS WITH PROFILE: {TEST_PROFILE}")
-    print("--------------------------------------------------")
-else:
-    start_sweeper()
+# --- HARDWARE RUNTIME INIT ---
+start_sweeper()
 
-# --- 4. MAIN LOOP ---
-cap = None if SIMULATION_MODE else cv2.VideoCapture(0)
+cap = cv2.VideoCapture(0)
 if cap:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
 prev_frame = None
 ai_window_counter = 0
 
-print("\n📷 SYSTEM ONLINE: Running processing loops...")
+print("\n📷 CORE ONLINE: Hardware capture loops engaged.")
 
+# --- MAIN SYSTEM STATE LOOPS ---
 while True:
     loop_start = time.time()
-    current_time = get_current_time()
+    current_time = time.time()
 
-    # 1. INITIALIZE FRAME FIRST
-    if SIMULATION_MODE:
-        ret, frame = True, np.zeros((720, 1280, 3), dtype=np.uint8)
-    else:
-        ret, frame = cap.read()
-        if not ret:
-            print("Camera read failed, retrying...")
-            time.sleep(1)
-            continue
+    ret, frame = cap.read()
+    if not ret:
+        print("Camera hardware read exception, retrying capture sequence...")
+        time.sleep(1)
+        continue
 
-    # 2. BYPASS HARDWARE DELAYS FOR SIMULATION WORKFLOWS
-    if not SIMULATION_MODE:
-        if current_time - arm_timestamp < ARM_DELAY:
-            continue
-        if current_time - last_intrusion_end < INTRUSION_COOLDOWN:
-            continue
+    # Enforce systemic delay filters to handle initialization or cool-down transitions cleanly
+    if current_time - arm_timestamp < ARM_DELAY:
+        continue
+    if current_time - last_intrusion_end < INTRUSION_COOLDOWN:
+        continue
 
-    # 3. RUN SENSOR CHECKS
-    pir_triggered = check_pir_simulation(frame, prev_frame)
-    prev_frame = frame.copy() if not SIMULATION_MODE else None
+    pir_triggered = check_motion_detected(frame, prev_frame)
+    prev_frame = frame.copy()
 
-    # VISUAL DEBUG: Blue dot if PIR is "feeling" movement
-    if pir_triggered and not SIMULATION_MODE:
+    # Visual telemetry interface marker (Blue dot signals hardware movement registration)
+    if pir_triggered:
         cv2.circle(frame, (20, 20), 10, (255, 0, 0), -1)
 
-    # --- STATE MACHINE LOGIC ---
+    # --- DECISION TREE EXECUTIVE LOGIC ---
     if is_system_armed:
         frame_counter += 1
         if not intrusion_active and pir_triggered:
@@ -432,9 +372,8 @@ while True:
                     (person_detection_counter + 1) if last_frame_had_person else 1
                 )
                 last_frame_had_person = True
-                # FIXED: Moved 's' outside the format bracket
                 print(
-                    f"[{current_time:.1f}s] Person confirmation path: {person_detection_counter}/{PERSON_CONFIRM_FRAMES}"
+                    f"[{current_time:.1f}s] Verification threshold tracking: {person_detection_counter}/{PERSON_CONFIRM_FRAMES}"
                 )
             else:
                 last_frame_had_person = False
@@ -450,75 +389,56 @@ while True:
                 intrusion_active = True
                 intrusion_start_time = current_time
                 last_motion_time = current_time
-                last_still_capture_time = current_time
                 last_ai_recheck_time = current_time
+                session_chunk_counter = 1
 
                 now_utc = datetime.datetime.utcnow()
                 intrusion_session_id = now_utc.strftime("%Y%m%d_%H%M%S")
 
-                # FIXED: Moved 's' outside the format bracket
                 print(
-                    f"\n🚨 [{current_time:.1f}s] INTRUSION CONFIRMED! Session: {intrusion_session_id}"
+                    f"\n🚨 [{current_time:.1f}s] THREAT VERIFIED. INTRUSION PROTOCOL ENGAGED. Session ID: {intrusion_session_id}"
                 )
 
                 alert_payload = {
-                    "message": "Person detected! Recording started.",
-                    "location": "Front Cam (Hardware)",
+                    "message": "Threat verified. Recording pipeline active.",
+                    "location": "Front Cam (Hardware Cluster)",
                     "sessionId": intrusion_session_id,
                 }
-                if is_connected and not SIMULATION_MODE:
+                if is_connected:
                     sio.emit("pi_alert", alert_payload)
                 else:
-                    print(f"✉️ Alert Queued: {alert_payload['message']}")
+                    print(f"✉️ Alert buffered locally: {alert_payload['message']}")
                     missed_alerts.append(alert_payload)
 
-                video_filename = f"evidence_{intrusion_session_id}.mp4"
+                video_filename = (
+                    f"evidence_{intrusion_session_id}_pt{session_chunk_counter}.mp4"
+                )
                 video_path = os.path.join(RECORDINGS_DIR, video_filename)
-                if not SIMULATION_MODE:
-                    video_writer = cv2.VideoWriter(
-                        video_path,
-                        cv2.VideoWriter_fourcc(*"mp4v"),
-                        TARGET_FPS,
-                        (1280, 720),
-                    )
+                video_writer = cv2.VideoWriter(
+                    video_path,
+                    cv2.VideoWriter_fourcc(*"mp4v"),
+                    TARGET_FPS,
+                    (1280, 720),
+                )
 
                 still_filename = f"evidence_{intrusion_session_id}_start.jpg"
                 still_path = os.path.join(RECORDINGS_DIR, still_filename)
-                if not SIMULATION_MODE:
-                    cv2.imwrite(still_path, frame)
+                cv2.imwrite(still_path, frame)
                 save_to_pending(still_path, "image", intrusion_session_id)
 
         elif intrusion_active:
-            if video_writer and not SIMULATION_MODE:
+            if video_writer:
                 video_writer.write(frame)
             if pir_triggered:
                 last_motion_time = current_time
-
-            if current_time - last_still_capture_time > STILL_IMAGE_INTERVAL:
-                print(f"🔍 Checking AI before taking update snapshot...")
-                person_still_there, _ = check_ai_for_person(frame)
-
-                if person_still_there:
-                    now_str = datetime.datetime.utcnow().strftime("%H%M%S")
-                    still_filename = (
-                        f"evidence_{intrusion_session_id}_{now_str}_update.jpg"
-                    )
-                    still_path = os.path.join(RECORDINGS_DIR, still_filename)
-                    if not SIMULATION_MODE:
-                        cv2.imwrite(still_path, frame)
-                    save_to_pending(still_path, "image", intrusion_session_id)
-                else:
-                    print("⚠️ Update snapshot skipped: No person visible in frame.")
-                last_still_capture_time = current_time
 
             time_since_motion = current_time - last_motion_time
             time_since_ai_recheck = current_time - last_ai_recheck_time
             recording_duration = current_time - intrusion_start_time
 
             if time_since_motion > 10 and time_since_ai_recheck > 10:
-                # FIXED: Moved 's' outside the format bracket
                 print(
-                    f"🔍 [{current_time:.1f}s] Motion quiet for 10s - Executing AI recheck..."
+                    f"🔍 [{current_time:.1f}s] Motion signature quiet for 10s - Executing algorithmic re-check evaluation..."
                 )
                 person_still_present, confidence = check_ai_for_person(frame)
                 last_ai_recheck_time = current_time
@@ -530,18 +450,39 @@ while True:
                         f"evidence_{intrusion_session_id}_{now_str}_recheck.jpg"
                     )
                     still_path = os.path.join(RECORDINGS_DIR, still_filename)
-                    if not SIMULATION_MODE:
-                        cv2.imwrite(still_path, frame)
+                    cv2.imwrite(still_path, frame)
                     save_to_pending(still_path, "image", intrusion_session_id)
 
-            if recording_duration > MAX_VIDEO_LENGTH or (
-                recording_duration > MIN_INTRUSION_DURATION
-                and time_since_motion > 20
-                and time_since_ai_recheck > 10
-            ):
-                # FIXED: Moved 's' outside the format bracket
+            # SCENARIO A: 60-Second Video Boundary Hit (Intruder remains within sector)
+            if recording_duration > MAX_VIDEO_LENGTH:
                 print(
-                    f"⏹️ [{current_time:.1f}s] INTRUSION COMPLETION MET. (Duration: {int(recording_duration)}s)"
+                    f"\n📦 [{current_time:.1f}s] Primary chunk limit reached. Executing stateless asset rollover loop..."
+                )
+                if video_writer:
+                    video_writer.release()
+
+                old_video_path = os.path.join(RECORDINGS_DIR, video_filename)
+                save_to_pending(old_video_path, "video", intrusion_session_id)
+
+                session_chunk_counter += 1
+                video_filename = (
+                    f"evidence_{intrusion_session_id}_pt{session_chunk_counter}.mp4"
+                )
+                video_path = os.path.join(RECORDINGS_DIR, video_filename)
+
+                print(f"🎬 Rollover block opened: {video_filename}")
+                video_writer = cv2.VideoWriter(
+                    video_path,
+                    cv2.VideoWriter_fourcc(*"mp4v"),
+                    TARGET_FPS,
+                    (1280, 720),
+                )
+                intrusion_start_time = current_time
+
+            # SCENARIO B: System Boundary Cleared (Sector unoccupied for 20 seconds)
+            elif time_since_motion > 20 and time_since_ai_recheck > 10:
+                print(
+                    f"⏹️ [{current_time:.1f}s] INTRUSION THREAT RESCINDED. Closing operational session log metadata structures."
                 )
                 intrusion_active = False
                 if video_writer:
@@ -556,33 +497,14 @@ while True:
                         intrusion_session_id,
                     )
 
-                if SIMULATION_MODE:
-                    print("--------------------------------------------------")
-                    print("✅ TEST INTEGRATION RESULT: [PASSED]")
-                    print("--------------------------------------------------")
-                    sys.exit(0)
+    cv2.imshow("Security Feed", frame)
+    if cv2.waitKey(1) == ord("q"):
+        break
 
-    if not SIMULATION_MODE:
-        cv2.imshow("Security Feed", frame)
-        if cv2.waitKey(1) == ord("q"):
-            break
-        processing_time = time.time() - loop_start
-        sleep_duration = FRAME_INTERVAL - processing_time
-        if sleep_duration > 0:
-            time.sleep(sleep_duration)
-    else:
-        simulated_clock += 0.1
-        if simulated_clock > 35.0:
-            if TEST_PROFILE == 3 and not intrusion_active:
-                print("--------------------------------------------------")
-                print(
-                    "✅ TEST INTEGRATION RESULT: [PASSED] (No False Intrusion Triggered)"
-                )
-                print("--------------------------------------------------")
-                sys.exit(0)
-            else:
-                print("❌ TEST TIMEOUT EXCEEDED")
-                sys.exit(1)
+    processing_time = time.time() - loop_start
+    sleep_duration = FRAME_INTERVAL - processing_time
+    if sleep_duration > 0:
+        time.sleep(sleep_duration)
 
 if cap:
     cap.release()

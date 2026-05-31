@@ -27,8 +27,9 @@ jobs:
         # because cloud servers don't have a physical monitor attached to display GUI windows
 
     - name: Run Automated Test Matrix
+      env:
+        PI_SECRET: "ci_test_secret_key_123"
       run: |
-        # Step into the new directory location first
-        cd backend/test_tools
+        cd backend/test
         chmod +x run_tests.sh
         ./run_tests.sh

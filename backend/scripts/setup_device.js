@@ -16,26 +16,34 @@ async function provisionDevice() {
         await mongoose.connect(process.env.MONGO_URI);
         console.log('Connected to MongoDB ecosystem.');
 
-        const deviceName = 'Raspberry_Pi_5_Main_Core'; // Accurate architecture descriptor
-        const existingDevice = await Device.findOne({ deviceName });
+        const targetDeviceId = 'pi_camera_front';
+        const deviceName = 'Raspberry_Pi_5_Main_Core';
 
-        if (existingDevice) {
-            console.log(`Device '${deviceName}' holds pre-existing provisioning maps.`);
-            process.exit(0);
-        }
-
+        // 1. Generate the fresh cryptographic key details first
         const rawApiKey = crypto.randomBytes(32).toString('hex');
         const apiKeyHash = crypto.createHash('sha256').update(rawApiKey).digest('hex');
 
-        const newDevice = new Device({ deviceId: 'pi_camera_front', deviceName, apiKeyHash });
-        await newDevice.save();
+        // 2. Use an upsert configuration to find and overwrite the key safely
+        const device = await Device.findOneAndUpdate(
+            { deviceId: targetDeviceId },
+            {
+                $set: {
+                    deviceName,
+                    apiKeyHash
+                }
+            },
+            { upsert: true, returnDocument: 'after', runValidators: true }
+        );
 
-        console.log(`\n ✅ Device '${deviceName}' Provisioned successfully!`);
-        console.log(`RAW_API_KEY: ${rawApiKey}\n`);
+        console.log(`\n ✅ Device '${device.deviceName}' successfully provisioned/rotated!`);
+        console.log(`⚙️  Target Device ID: ${device.deviceId}`);
+        console.log(`🔑 NEW RAW_API_KEY: ${rawApiKey}\n`);
+        console.log(`⚠️  Make sure to update your .env files with this new value!`);
+
         process.exit(0);
     } catch (err) {
         console.error('Fatal terminal configuration drop error:', err);
-        process.exit(1); // Standard shell failure flag
+        process.exit(1);
     }
 }
 provisionDevice();
