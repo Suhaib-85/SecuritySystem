@@ -92,11 +92,20 @@ async function runBackendTestSuite() {
         const sampleVideoPath = path.join(__dirname, '..', '..', 'assets', 'sample.mp4');
         const mockVideo = createMockFileStream(sampleVideoPath);
 
-        form.append('video', mockVideo.stream, {
-            filename: 'sample.mp4',
-            contentType: 'video/mp4',
-            knownLength: mockVideo.size
-        });
+        if (mockVideo) {
+            form.append('video', mockVideo.stream, {
+                filename: 'sample.mp4',
+                contentType: 'video/mp4',
+                knownLength: mockVideo.size
+            });
+        } else {
+            const mockBuffer = Buffer.alloc(5 * 1024 * 1024); // 5MB buffer
+            form.append('video', mockBuffer, {
+                filename: 'sample.mp4',
+                contentType: 'video/mp4',
+                knownLength: mockBuffer.length
+            });
+        }
 
         const response = await axios.post(`${SERVER_URL}/api/upload`, form, {
             headers: {
