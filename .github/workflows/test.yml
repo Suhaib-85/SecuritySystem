@@ -48,7 +48,7 @@ jobs:
         JWT_SECRET: ${{ secrets.JWT_SECRET }}
       run: |
         cd backend
-        node server.js &
+        node --trace-deprecation server.js &
         sleep 5
 
     - name: Run Automated Test Matrix
