@@ -62,12 +62,3 @@ jobs:
         cd backend/test
         chmod +x run_tests.sh
         ./run_tests.sh
-
-    - name: Debug deprecations
-      env:
-        PI_SECRET: ${{ secrets.PI_SECRET }}
-        JWT_SECRET: ${{ secrets.JWT_SECRET }}
-        MONGO_URI: ${{ secrets.MONGO_URI }}
-        PORT: ${{ secrets.PORT }}
-        NODE_ENV: ${{ secrets.NODE_ENV }}
-      run: node --trace-deprecation backend/server.js
