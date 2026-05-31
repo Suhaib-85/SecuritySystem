@@ -28,7 +28,7 @@ jobs:
 
     - name: Run Automated Test Matrix
       env:
-        PI_SECRET: "ci_test_secret_key_123"
+        PI_SECRET: "7b734d45e373ec65d33d34b6e8d997b3e72ad4a6e4900a33c7e0f1b51f9917eb"
       run: |
         cd backend/test_tools
         chmod +x run_tests.sh
