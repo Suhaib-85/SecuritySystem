@@ -30,6 +30,6 @@ jobs:
       env:
         PI_SECRET: "ci_test_secret_key_123"
       run: |
-        cd backend/test
+        cd backend/test_tools
         chmod +x run_tests.sh
         ./run_tests.sh
