@@ -40,6 +40,9 @@ jobs:
       env:
         PI_SECRET: ${{ secrets.PI_SECRET }}
         MONGO_URI: ${{ secrets.MONGO_URI }}
+        PORT: ${{ secrets.PORT }}
+        NODE_ENV: ${{ secrets.NODE_ENV }}
+        JWT_SECRET: ${{ secrets.JWT_SECRET }}
       run: |
         cd backend
         node server.js &
@@ -47,7 +50,11 @@ jobs:
 
     - name: Run Automated Test Matrix
       env:
-        PI_SECRET: ${{ secrets.PI_SECRET }}
+        PI_API_KEY: ${{ secrets.PI_API_KEY }}
+        JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        MONGO_URI: ${{ secrets.MONGO_URI }}
+        PORT: ${{ secrets.PORT }}
+        NODE_ENV: ${{ secrets.NODE_ENV }}
       run: |
         cd backend/test
         chmod +x run_tests.sh
