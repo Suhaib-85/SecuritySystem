@@ -20,6 +20,10 @@ console.log("====================================================");
 
 // Helper function to create a stream from the real sample video
 function createMockFileStream(filePath) {
+    if (!fs.existsSync(filePath)) {
+        return null;
+    }
+
     const stats = fs.statSync(filePath);
 
     return {
@@ -93,15 +97,20 @@ async function runBackendTestSuite() {
         const mockVideo = createMockFileStream(sampleVideoPath);
 
         if (mockVideo) {
+            console.log("Using real sample.mp4 asset...");
+
             form.append('video', mockVideo.stream, {
                 filename: 'sample.mp4',
                 contentType: 'video/mp4',
                 knownLength: mockVideo.size
             });
         } else {
-            const mockBuffer = Buffer.alloc(5 * 1024 * 1024); // 5MB buffer
+            console.log("sample.mp4 not found — using mock stream...");
+
+            const mockBuffer = Buffer.alloc(5 * 1024 * 1024);
+
             form.append('video', mockBuffer, {
-                filename: 'sample.mp4',
+                filename: 'mock-stream.mp4',
                 contentType: 'video/mp4',
                 knownLength: mockBuffer.length
             });
