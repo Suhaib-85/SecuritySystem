@@ -50,7 +50,7 @@ jobs:
 
     - name: Run Automated Test Matrix
       env:
-        PI_API_KEY: ${{ secrets.PI_API_KEY }}
+        PI_SECRET: ${{ secrets.PI_SECRET }}
         JWT_SECRET: ${{ secrets.JWT_SECRET }}
         MONGO_URI: ${{ secrets.MONGO_URI }}
         PORT: ${{ secrets.PORT }}
