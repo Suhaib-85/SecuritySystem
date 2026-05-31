@@ -19,12 +19,22 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install System Dependencies
+    - name: Set up Node.js Environment
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Install Python System Dependencies
       run: |
         python -m pip install --upgrade pip
         pip install opencv-python-headless numpy python-socketio requests python-dotenv
         # Note: opencv-python-headless is used instead of opencv-python 
         # because cloud servers don't have a physical monitor attached to display GUI windows
+
+    - name: Install Node.js System Dependencies
+      run: |
+        cd backend
+        npm install
 
     - name: Run Automated Test Matrix
       env:
