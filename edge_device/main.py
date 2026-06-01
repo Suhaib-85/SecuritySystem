@@ -7,7 +7,6 @@ import threading
 import datetime
 import requests
 import json
-import sys
 import shutil
 from dotenv import load_dotenv
 
