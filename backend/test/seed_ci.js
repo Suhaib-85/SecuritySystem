@@ -25,10 +25,14 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 async function seed() {
     const uri = process.env.MONGO_URI;
-    const piSecret = process.env.PI_SECRET;
+    // Mirror test_suite.js's fallback EXACTLY. If PI_SECRET isn't present, both
+    // the seed and the test converge on this same literal, so the device the
+    // seed stores always matches the token the upload test sends. (MONGO_URI is
+    // still required — without it there's nowhere to seed.)
+    const piSecret = process.env.PI_SECRET || 'ci_test_secret_key_123';
 
-    if (!uri || !piSecret) {
-        console.error('seed_ci: MONGO_URI and PI_SECRET must both be set.');
+    if (!uri) {
+        console.error('seed_ci: MONGO_URI must be set.');
         process.exit(1);
     }
 

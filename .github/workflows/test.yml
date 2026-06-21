@@ -31,7 +31,12 @@ jobs:
     env:
       # Every step points at the ephemeral service container, not Atlas.
       MONGO_URI: mongodb://localhost:27017/security_db_test
-      PI_SECRET: ${{ secrets.PI_SECRET }}
+      # CI device key: a deterministic throwaway used ONLY against the ephemeral
+      # DB. The seed hashes this and the upload test sends it, so they must agree.
+      # Using a literal (matching test_suite.js's fallback default) removes any
+      # dependence on the real PI_SECRET reaching every step — the source of the
+      # earlier Profile 3 "Invalid token" failure.
+      PI_SECRET: ci_test_secret_key_123
       JWT_SECRET: ${{ secrets.JWT_SECRET }}
       NODE_ENV: test
 
