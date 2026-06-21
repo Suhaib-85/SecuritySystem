@@ -13,6 +13,28 @@ jobs:
   integration-verification:
     runs-on: ubuntu-latest
 
+    # Ephemeral MongoDB: a throwaway instance that lives ONLY for this job and is
+    # destroyed when it ends. The test profiles read/write here instead of the
+    # real Atlas cluster, so CI never touches production data and leaves nothing
+    # behind. (This also removes any need to allowlist GitHub runner IPs in Atlas.)
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Every step points at the ephemeral service container, not Atlas.
+      MONGO_URI: mongodb://localhost:27017/security_db_test
+      PI_SECRET: ${{ secrets.PI_SECRET }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      NODE_ENV: test
+
     steps:
     - name: Checkout Code Repository
       uses: actions/checkout@v4
@@ -31,33 +53,28 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install opencv-python-headless numpy python-socketio requests python-dotenv
-        # Note: opencv-python-headless is used instead of opencv-python 
-        # because cloud servers don't have a physical monitor attached to display GUI windows
+        # opencv-python-headless (not opencv-python) because CI runners have no
+        # display attached for GUI windows.
 
     - name: Install Node.js System Dependencies
       run: |
         cd backend
         npm install
 
+    - name: Seed Ephemeral Test Database
+      # Insert the one device the suite needs (apiKeyHash == sha256(PI_SECRET))
+      # so Profile 3's authenticated upload can pass against the blank DB.
+      run: |
+        cd backend
+        node test/seed_ci.js
+
     - name: Start Backend Server
-      env:
-        PI_SECRET: ${{ secrets.PI_SECRET }}
-        MONGO_URI: ${{ secrets.MONGO_URI }}
-        PORT: ${{ secrets.PORT }}
-        NODE_ENV: ${{ secrets.NODE_ENV }}
-        JWT_SECRET: ${{ secrets.JWT_SECRET }}
       run: |
         cd backend
         node --trace-deprecation server.js &
         sleep 5
 
     - name: Run Automated Test Matrix
-      env:
-        PI_SECRET: ${{ secrets.PI_SECRET }}
-        JWT_SECRET: ${{ secrets.JWT_SECRET }}
-        MONGO_URI: ${{ secrets.MONGO_URI }}
-        PORT: ${{ secrets.PORT }}
-        NODE_ENV: ${{ secrets.NODE_ENV }}
       run: |
         cd backend/test
         chmod +x run_tests.sh

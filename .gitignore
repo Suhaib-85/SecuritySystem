@@ -1,46 +1,56 @@
 # --- 1. Node.js Backend ---
 backend/node_modules/
-backend/npm-debug.log
-backend/yarn-error.log
 backend/*.pid
 backend/*.seed
 backend/*.pid.lock
 
+# Built frontend output (Vite regenerates this whole folder on every build).
+# Ignore it entirely instead of half of it.
+backend/public/
+
 # --- 2. Environment Variables (CRITICAL) ---
-# Never commit your database URI or JWT secrets
+# Never commit your database URI or JWT/PI secrets.
 *.env
+.env
+**/.env
+.env.*
 *.local
 
-# --- 3. Python Edge Device ---
+# --- 3. Python Virtual Environment ---
+# The venv lives at the PROJECT ROOT, so ignore .venv/ at any depth.
+.venv/
+venv/
 __pycache__/
-edge_device/*.pyc
-edge_device/venv/
-edge_device/.venv/
+*.pyc
 
 # --- 4. Documentation ---
+# NOTE: this excludes your SRS / Vision&Scope PDFs from the repo.
+# Remove these two lines if you want those deliverables versioned in Git.
 docs/*.txt
 docs/*.pdf
 
 # --- 5. AI Models & Large Assets ---
-# You can comment out the next line if you WANT to commit the model (it's only 6MB)
+# Model IS committed (only ~6MB, needed to run). Uncomment to exclude it.
 # edge_device/model/*.tflite
-# edge_device/model/*.zip
 
 # --- 6. Media & Evidence ---
-# Ignore heavy video files anywhere in the project
+# Ignore heavy captured evidence anywhere...
 *.mp4
+*.webm
 *.jpg
+# ...but KEEP the sample asset the simulator + tests depend on.
+!assets/sample.mp4
 
 # --- 7. Uploads & Temporary Storage ---
-!**/.gitkeep
-# Ignore local JSON metadata sidecar files on the edge device
-edge_device/pending_uploads/*.json
-edge_device/recordings/*.json
+# Transient queue/sidecar/staging files in ANY tier.
+**/pending_uploads/*.json
+**/recordings/*.json
+**/temp_uploads/*
 
 # --- 8. React Frontend (Vite) ---
 frontend/node_modules/
 frontend/dist/
-frontend/dist-ssr/
+frontend/.vite/
 
 # --- 9. OS & Editor Files ---
 .DS_Store
@@ -51,17 +61,10 @@ desktop.ini
 .idea/
 *.swp
 *.sw?
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-$RECYCLE.BIN/
 
-# --- 10. Catch-all Log Files ---
+# --- 10. Logs ---
 logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+
+# --- 11. Keep empty dirs (MUST be last so it overrides the rules above) ---
+!**/.gitkeep

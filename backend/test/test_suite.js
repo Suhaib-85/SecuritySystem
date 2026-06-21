@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import jwt from 'jsonwebtoken';
+import { io as ioClient } from 'socket.io-client';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,6 +15,7 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3000';
 const HARDWARE_SECRET = process.env.PI_SECRET || 'ci_test_secret_key_123';
+const JWT_SECRET = process.env.JWT_SECRET;
 
 console.log("====================================================");
 console.log("🚀 INITIALIZING BACKEND PIPELINE VERIFICATION SUITE");
@@ -59,25 +62,75 @@ async function runBackendTestSuite() {
     }
 
     // ----------------------------------------------------
-    // PROFILE 2: Mode Management Toggle Interface
-    // Targets: FR-01, NFR-02
+    // PROFILE 2: Mode Management Toggle (live socket round-trip)
+    // Targets: FR-01 (toggle Active/Inactive), NFR-02 (<1s visual feedback)
+    //
+    // The toggle is a Socket.IO event, not a REST route, so this connects a real
+    // admin client (JWT signed with the server's secret), drives the system
+    // ARMED then DISARMED, and confirms the server broadcasts each matching
+    // 'state_update' back. Driving both transitions makes the test independent
+    // of the DB's starting state (works on a blank ephemeral CI DB or a
+    // populated local one) and leaves the system DISARMED afterward.
+    // Correctness is the pass condition; latency is measured against NFR-02 and
+    // only warns — never hard-fails on a momentary slow DB round-trip.
     // ----------------------------------------------------
     try {
-        console.log("\nExecuting Profile 2: Mode Switch Toggle Validation...");
-        const startTime = Date.now();
+        console.log("\nExecuting Profile 2: Live Socket Toggle Round-Trip (FR-01 / NFR-02)...");
 
-        const response = { status: 200, data: { success: true, isActive: true } };
-        const latency = Date.now() - startTime;
-
-        if (response.status === 200) {
-            console.log(`✅ Profile 2 Passed: API route successfully processed configuration changes in ${latency}ms.`);
-            passedProfiles++;
-        } else {
-            console.error(`Profile 2 Failed: Mode switch returned non-success response status: ${response.status}`);
-            process.exit(1);
+        if (!JWT_SECRET) {
+            throw new Error("JWT_SECRET is not set in the environment — cannot sign an admin token.");
         }
+
+        const adminToken = jwt.sign({ id: 'ci_test_admin' }, JWT_SECRET, { expiresIn: '5m' });
+
+        await new Promise((resolve, reject) => {
+            const client = ioClient(SERVER_URL, {
+                auth: { token: adminToken },
+                reconnection: false,
+                timeout: 5000,
+                transports: ['websocket', 'polling'],
+            });
+
+            let phase = 'arming';     // arming -> disarming -> done
+            let armSentAt = 0;
+            let armLatency = 0;
+
+            const failTimer = setTimeout(() => {
+                client.close();
+                reject(new Error("Timed out (>6s) waiting for a toggle round-trip. Is the server up?"));
+            }, 6000);
+
+            client.on('connect_error', (err) => {
+                clearTimeout(failTimer);
+                client.close();
+                reject(new Error(`Socket auth/connect failed: ${err.message}`));
+            });
+
+            client.on('connect', () => {
+                armSentAt = Date.now();
+                client.emit('toggle_system', { isActive: true });   // ARM
+            });
+
+            client.on('state_update', (data) => {
+                if (phase === 'arming' && data.isActive === true) {
+                    armLatency = Date.now() - armSentAt;
+                    phase = 'disarming';
+                    client.emit('toggle_system', { isActive: false }); // DISARM (restore safe state)
+                } else if (phase === 'disarming' && data.isActive === false) {
+                    phase = 'done';
+                    clearTimeout(failTimer);
+                    setTimeout(() => client.close(), 150);
+                    console.log(`✅ Profile 2 Passed: Toggle round-trip confirmed (ARM → DISARM) in ${armLatency}ms.`);
+                    if (armLatency > 1000) {
+                        console.log(`   ⚠️  NFR-02 note: ${armLatency}ms exceeded the 1000ms feedback budget (likely a slow DB moment).`);
+                    }
+                    passedProfiles++;
+                    resolve();
+                }
+            });
+        });
     } catch (err) {
-        console.error(`Profile 2 Failed: Network transmission dropped out: ${err.message}`);
+        console.error(`Profile 2 Failed: ${err.message}`);
         process.exit(1);
     }
 

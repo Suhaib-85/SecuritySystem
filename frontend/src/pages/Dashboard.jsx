@@ -28,8 +28,17 @@ export default function Dashboard() {
         socketRef.current = io({ auth: { token } });
 
         socketRef.current.on('state_update', (data) => setIsActive(data.isActive));
-        socketRef.current.on('new_event', (event) => {
-            setEvents(prev => [event, ...prev]);
+        socketRef.current.on('new_event', (incoming) => {
+            // The same event can arrive twice (the alert and its later media
+            // upload share one _id), and a socket push can race the initial HTTP
+            // history fetch. Dedupe by _id and re-sort so a card never appears
+            // twice and order stays newest-first.
+            setEvents(prev => {
+                const deduped = prev.filter(e => e._id !== incoming._id);
+                return [incoming, ...deduped].sort(
+                    (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+                );
+            });
         });
 
         return () => { if (socketRef.current) socketRef.current.close(); };
@@ -67,7 +76,7 @@ export default function Dashboard() {
                         return (
                             <div key={event._id || i} className={`p-4 border-b border-gray-800 flex justify-between items-center ${isAlert ? 'border-l-4 border-l-red-500' : 'border-l-4 border-l-blue-500'}`}>
                                 <span className={isAlert ? 'text-red-400' : 'text-blue-400'}>
-                                    <strong>{new Date(event.timestamp).toLocaleTimeString()}:</strong> {event.message}
+                                    <strong>{new Date(event.timestamp).toLocaleString()}:</strong> {event.message}
                                 </span>
                             </div>
                         );

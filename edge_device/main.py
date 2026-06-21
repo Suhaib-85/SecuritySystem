@@ -14,10 +14,10 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:3000")
-SECRET_KEY = os.getenv("PI_API_KEY")
+SECRET_KEY = os.getenv("PI_SECRET")
 
 if not SECRET_KEY:
-    raise ValueError("FATAL: PI_API_KEY must be set in the environment profile")
+    raise ValueError("FATAL: PI_SECRET must be set in the environment profile")
 
 CONFIDENCE_THRESHOLD = 0.50
 MAX_VIDEO_LENGTH = 60
@@ -214,6 +214,32 @@ def check_motion_detected(current_frame, prev_frame):
     return cv2.countNonZero(thresh) > 3000
 
 
+# --- UNIQUE SESSION ID (millisecond resolution + same-ms guard) ---
+_last_session_stamp = ""
+_session_dedupe_counter = 0
+
+
+def make_session_id():
+    """Return a unique, chronologically-sortable intrusion session id.
+
+    Uses millisecond resolution (YYYYMMDD_HHMMSS_mmm). A same-millisecond guard
+    appends an incrementing counter so two intrusions confirmed within the exact
+    same millisecond can never collide into the same id (and therefore the same
+    filename), which previously caused two events to share one file on disk.
+    """
+    global _last_session_stamp, _session_dedupe_counter
+    now = datetime.datetime.utcnow()
+    stamp = now.strftime("%Y%m%d_%H%M%S_") + f"{now.microsecond // 1000:03d}"
+
+    if stamp == _last_session_stamp:
+        _session_dedupe_counter += 1
+        return f"{stamp}_{_session_dedupe_counter}"
+
+    _last_session_stamp = stamp
+    _session_dedupe_counter = 0
+    return stamp
+
+
 # --- TRANSACTIONAL STORAGE WORKERS ---
 def save_to_pending(file_path, file_type="video", session_id=None):
     try:
@@ -292,7 +318,25 @@ def attempt_upload(pending_file):
                     if pending_file in pending_uploads:
                         pending_uploads.remove(pending_file)
             return False
+    except FileNotFoundError:
+        # The media file is gone (already uploaded, or removed externally). There
+        # is nothing to retry, so drop this stale queue entry and its sidecar
+        # instead of mislabelling it as a network failure and retrying forever.
+        print(
+            f"⚠️  SWEEPER: File no longer on disk for {pending_file['filename']} — dropping stale queue entry."
+        )
+        json_path = f"{pending_file['filepath']}.json"
+        if os.path.exists(json_path):
+            try:
+                os.remove(json_path)
+            except OSError:
+                pass
+        with pending_lock:
+            if pending_file in pending_uploads:
+                pending_uploads.remove(pending_file)
+        return False
     except Exception as e:
+        # Genuine network/transport failure: keep the file and retry next sweep.
         print(f"❌ SWEEPER TRANSMISSION FAILED: Network channel blocked: {e}")
         return False
 
@@ -318,13 +362,127 @@ def start_sweeper():
     threading.Thread(target=sweeper_loop, daemon=True).start()
 
 
+def bootstrap_pending():
+    """Recover un-uploaded evidence left in PENDING_DIR after a crash/restart.
+
+    The in-memory queue starts empty, but media from a previous run may still be
+    on disk. Each media file has a {name}.json sidecar (written by
+    save_to_pending) holding sessionId/type/timestamp. We rebuild the queue from
+    those sidecars so the next sweeper cycle drains them — guaranteeing evidence
+    eventually reaches the database and isn't stranded.
+
+    A media file whose sidecar is missing or corrupt cannot be uploaded safely
+    (no sessionId/timestamp for correct Gallery grouping), so it is discarded to
+    avoid indefinite disk bloat. Orphaned sidecars (no media) are cleaned up too.
+    """
+    recovered = 0
+    try:
+        entries = os.listdir(PENDING_DIR)
+    except FileNotFoundError:
+        return
+
+    media_files = [
+        f for f in entries if not f.endswith(".json") and not f.startswith(".")
+    ]
+
+    for filename in media_files:
+        filepath = os.path.join(PENDING_DIR, filename)
+        json_path = f"{filepath}.json"
+
+        if not os.path.exists(json_path):
+            print(f"🗑️  RECOVERY: No sidecar for {filename} — discarding orphan.")
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
+            continue
+
+        try:
+            with open(json_path, "r") as f:
+                meta = json.load(f)
+
+            # Reset attempts so recovered evidence gets a fresh upload budget.
+            # Preserve sessionId/type/timestamp so the Gallery groups and orders
+            # the clip by its ORIGINAL capture time, not the recovery time.
+            metadata = {
+                "filename": filename,
+                "filepath": filepath,
+                "type": meta.get("type", "video"),
+                "attempts": 0,
+                "sessionId": meta.get("sessionId", "unknown"),
+                "timestamp": meta.get(
+                    "timestamp", datetime.datetime.utcnow().isoformat() + "Z"
+                ),
+            }
+            with pending_lock:
+                pending_uploads.append(metadata)
+            recovered += 1
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            print(f"🗑️  RECOVERY: Corrupt sidecar for {filename} ({e}) — discarding orphan.")
+            for p in (filepath, json_path):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+    # Sweep up any orphaned sidecars whose media file is gone.
+    for filename in [f for f in os.listdir(PENDING_DIR) if f.endswith(".json")]:
+        json_path = os.path.join(PENDING_DIR, filename)
+        if not os.path.exists(json_path[:-5]):  # strip ".json"
+            try:
+                os.remove(json_path)
+            except OSError:
+                pass
+
+    if recovered:
+        print(f"🔁 RECOVERY: Re-queued {recovered} un-uploaded asset(s) from a previous session.")
+
+
 # --- HARDWARE RUNTIME INIT ---
+bootstrap_pending()
 start_sweeper()
 
 cap = cv2.VideoCapture(0)
-if cap:
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+# --- LOCK TRUE CAPTURE RESOLUTION ---
+# cap.set() only REQUESTS a resolution; many webcams ignore it and hand back a
+# different size. cv2.VideoWriter silently drops every frame whose dimensions
+# don't exactly match the size it was opened with, leaving 0-byte / unplayable
+# clips. So we probe one real frame and reuse its actual dimensions everywhere.
+ret, probe_frame = cap.read()
+if ret and probe_frame is not None:
+    FRAME_HEIGHT, FRAME_WIDTH = probe_frame.shape[:2]
+else:
+    FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
+print(f"📐 CAPTURE RESOLUTION LOCKED AT: {FRAME_WIDTH}x{FRAME_HEIGHT}")
+
+
+def create_video_writer(output_path):
+    """Create a VideoWriter for recording intrusion clips.
+
+    Uses mp4v (MPEG-4 Part 2), which is bundled with OpenCV and needs no
+    external codec DLL — so recording is reliable on this Windows dev machine.
+    mp4v produces small files (a full 60s 720p clip stays well under the 50MB
+    upload limit) but may not play *inline* in some browsers; clips always
+    download and play in any local media player.
+
+    NOTE: On the Raspberry Pi 5, H.264 (avc1) is hardware-accelerated and
+    works out of the box. When migrating, switch the codec tuple back to
+    ("avc1", "mp4v") to get browser-native inline playback for free.
+    """
+    for codec in ("mp4v",):
+        fourcc = cv2.VideoWriter_fourcc(*codec)
+        writer = cv2.VideoWriter(
+            output_path, fourcc, TARGET_FPS, (FRAME_WIDTH, FRAME_HEIGHT)
+        )
+        if writer.isOpened():
+            return writer
+        writer.release()
+    print(f"❌ CODEC: Could not initialize any VideoWriter for {output_path}")
+    return None
+
 
 prev_frame = None
 ai_window_counter = 0
@@ -391,8 +549,7 @@ while True:
                 last_ai_recheck_time = current_time
                 session_chunk_counter = 1
 
-                now_utc = datetime.datetime.utcnow()
-                intrusion_session_id = now_utc.strftime("%Y%m%d_%H%M%S")
+                intrusion_session_id = make_session_id()
 
                 print(
                     f"\n🚨 [{current_time:.1f}s] THREAT VERIFIED. INTRUSION PROTOCOL ENGAGED. Session ID: {intrusion_session_id}"
@@ -413,12 +570,7 @@ while True:
                     f"evidence_{intrusion_session_id}_pt{session_chunk_counter}.mp4"
                 )
                 video_path = os.path.join(RECORDINGS_DIR, video_filename)
-                video_writer = cv2.VideoWriter(
-                    video_path,
-                    cv2.VideoWriter_fourcc(*"mp4v"),
-                    TARGET_FPS,
-                    (1280, 720),
-                )
+                video_writer = create_video_writer(video_path)
 
                 still_filename = f"evidence_{intrusion_session_id}_start.jpg"
                 still_path = os.path.join(RECORDINGS_DIR, still_filename)
@@ -427,7 +579,9 @@ while True:
 
         elif intrusion_active:
             if video_writer:
-                video_writer.write(frame)
+                # Resize to the writer's locked resolution. If a frame ever comes
+                # back at a different size, an unmatched write is silently dropped.
+                video_writer.write(cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT)))
             if pir_triggered:
                 last_motion_time = current_time
 
@@ -470,12 +624,7 @@ while True:
                 video_path = os.path.join(RECORDINGS_DIR, video_filename)
 
                 print(f"🎬 Rollover block opened: {video_filename}")
-                video_writer = cv2.VideoWriter(
-                    video_path,
-                    cv2.VideoWriter_fourcc(*"mp4v"),
-                    TARGET_FPS,
-                    (1280, 720),
-                )
+                video_writer = create_video_writer(video_path)
                 intrusion_start_time = current_time
 
             # SCENARIO B: System Boundary Cleared (Sector unoccupied for 20 seconds)
