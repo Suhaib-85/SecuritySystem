@@ -39,24 +39,27 @@ export const uploadVideo = async (req, res, io) => {
                 }
 
                 try {
-                    const updatedEvent = await Event.findOneAndUpdate(
-                        { sessionId: sessionId || 'unknown' },
-                        {
-                            $set: {
-                                type: 'media',
-                                message: fileType === 'image' ? 'Intruder Image Captured' : 'Intruder Video Recorded',
-                                filename: filename,
-                                videoId: writeStream.id,
-                                fileType: fileType || 'video',
-                                severity: 'alert',
-                                deviceId: req.body.deviceId || 'pi_camera_front'
-                            },
-                            $setOnInsert: { timestamp: cleanTimestamp, status: 'new' }
-                        },
-                        { returnDocument: 'after', upsert: true }
-                    );
+                    // Create a NEW event per uploaded file. Every chunk of an
+                    // intrusion shares the same sessionId but is its own document
+                    // with its own timestamp and videoId — so a 5-chunk rollover
+                    // yields 5 video events (+1 image), all grouped by sessionId in
+                    // the Gallery, instead of collapsing into one last-write-wins doc.
+                    const newEvent = await Event.create({
+                        type: 'media',
+                        message: fileType === 'image' ? 'Intruder Image Captured' : 'Intruder Video Recorded',
+                        filename: filename,
+                        videoId: writeStream.id,
+                        fileType: fileType || 'video',
+                        severity: 'alert',
+                        status: 'new',
+                        sessionId: sessionId || 'unknown',
+                        timestamp: cleanTimestamp,
+                        // Stamp with the device that actually authenticated THIS
+                        // upload (set by verifyToken), not a hardcoded default.
+                        deviceId: req.device?.deviceId || req.body.deviceId || 'pi_camera_front'
+                    });
 
-                    io.emit('new_event', updatedEvent);
+                    io.emit('new_event', newEvent);
                     res.status(201).json({ message: 'Upload success', fileId: writeStream.id });
                     resolve();
                 } catch (dbErr) {

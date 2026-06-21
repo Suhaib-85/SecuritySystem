@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Video, X as CloseIcon, Trash2 } from 'lucide-react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, Video, X as CloseIcon, Trash2, Play } from 'lucide-react';
 
 export default function Gallery() {
     const [allEvents, setAllEvents] = useState([]);
@@ -11,6 +11,8 @@ export default function Gallery() {
 
     const navigate = useNavigate();
     const token = localStorage.getItem('token');
+    const [searchParams] = useSearchParams();
+    const sessionFilter = searchParams.get('session');  // set when arriving from a dashboard event click
 
     const fetchEvents = useCallback(async () => {
         try {
@@ -49,9 +51,20 @@ export default function Gallery() {
         }
     };
 
+    // Open a piece of evidence in the modal. Viewing it counts as reviewing it,
+    // so auto-promote 'new' -> 'reviewed' (but never touch 'reviewed' or the
+    // deliberate 'archived' state — and skip the redundant PATCH if already set).
+    const handleOpenMedia = (event) => {
+        setActiveMedia({ type: event.fileType, id: event.videoId, filename: event.filename });
+        if ((event.status || 'new') === 'new') {
+            handleStatusChange(event._id, 'reviewed');
+        }
+    };
+
     const sessions = useMemo(() => {
         const filtered = allEvents.filter(event => {
             if (!event.videoId) return false;
+            if (sessionFilter && event.sessionId !== sessionFilter) return false;
             const matchesStatus = filterStatus === 'all' || event.status === filterStatus;
             const matchesSeverity = filterSeverity === 'all' || event.severity === filterSeverity;
             const matchesDevice = filterDevice === 'all' || event.deviceId === filterDevice;
@@ -62,13 +75,21 @@ export default function Gallery() {
         filtered.forEach(event => {
             const sid = event.sessionId || 'unknown';
             if (!grouped[sid]) {
-                grouped[sid] = { id: sid, events: [], timestamp: event.timestamp };
+                grouped[sid] = { id: sid, events: [] };
             }
             grouped[sid].events.push(event);
         });
 
-        return Object.values(grouped).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    }, [allEvents, filterStatus, filterSeverity, filterDevice]);
+        const sessionList = Object.values(grouped);
+        sessionList.forEach(s => {
+            // Chronological within a session (image first, then pt1, pt2, ...).
+            s.events.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            s.timestamp = s.events[0]?.timestamp;  // session start = earliest event
+        });
+
+        // Newest session first.
+        return sessionList.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    }, [allEvents, filterStatus, filterSeverity, filterDevice, sessionFilter]);
 
     useEffect(() => { fetchEvents(); }, [fetchEvents]);
     const uniqueDevices = [...new Set(allEvents.map(e => e.deviceId).filter(Boolean))];
@@ -79,6 +100,18 @@ export default function Gallery() {
                 <h2 className="text-2xl font-bold text-blue-400">📸 Evidence Gallery</h2>
                 <Link to="/" className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded font-bold transition"><ArrowLeft size={18} /> Back</Link>
             </div>
+
+            {sessionFilter && (
+                <div className="flex flex-wrap justify-between items-center gap-3 mb-6 bg-blue-900/30 border border-blue-700 rounded-lg p-3">
+                    <span className="text-blue-300 text-sm">Showing evidence for a single intrusion event.</span>
+                    <button
+                        onClick={() => navigate('/gallery')}
+                        className="text-sm bg-blue-700 hover:bg-blue-600 px-3 py-1 rounded font-bold transition"
+                    >
+                        Show all evidence
+                    </button>
+                </div>
+            )}
 
             <div className="flex flex-wrap gap-4 mb-8 bg-gray-800/50 p-4 rounded-xl border border-gray-700">
                 <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="bg-gray-900 text-white p-2 rounded">
@@ -100,7 +133,13 @@ export default function Gallery() {
 
             {sessions.length === 0 && <div className="text-center text-gray-500 mt-20">No matching evidence captured.</div>}
 
-            {sessions.map(session => (
+            {sessions.map(session => {
+                // Pre-extract all image events from this session (already in
+                // chronological order from the useMemo sort). Each video card will
+                // find its own closest-prior image from this list rather than
+                // sharing one static poster for the whole session.
+                const sessionImages = session.events.filter(e => e.fileType === 'image');
+                return (
                 <div key={session.id} className="mb-10 bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-lg">
                     <div className="mb-4 pb-2 border-b border-gray-700">
                         {/* Elegant Consumer-Grade Event Card Headers */}
@@ -113,15 +152,38 @@ export default function Gallery() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
                         {session.events.map(event => (
                             <div key={event._id} className="relative bg-gray-900 rounded-lg overflow-hidden flex flex-col group border border-gray-700 hover:border-blue-500 transition-all">
-                                <div className="cursor-pointer relative h-40 bg-black" onClick={() => setActiveMedia({ type: event.fileType, id: event.videoId, filename: event.filename })}>
+                                <div className="cursor-pointer relative h-40 bg-black" onClick={() => handleOpenMedia(event)}>
                                     <div className="absolute top-2 left-2 bg-black/70 px-2 py-1 rounded text-[10px] font-bold text-gray-200 uppercase z-10">{event.fileType}</div>
-                                    {event.fileType === 'video' ? (
-                                        <div className="h-full flex items-center justify-center"><Video size={40} className="text-blue-500" /></div>
-                                    ) : (
+                                    {event.fileType === 'video' ? (() => {
+                                        // Find the image with the largest timestamp
+                                        // that is <= this video's own timestamp.
+                                        // Because sessionImages is sorted ascending,
+                                        // findLast gives us the most-recent image that
+                                        // existed at or before this chunk started —
+                                        // the most semantically accurate thumbnail.
+                                        const videoTs = new Date(event.timestamp).getTime();
+                                        const closestImg = sessionImages.findLast(
+                                            img => new Date(img.timestamp).getTime() <= videoTs
+                                        );
+                                        const posterUrl = closestImg
+                                            ? `/api/video/${closestImg.videoId}?token=${token}`
+                                            : null;
+                                        return posterUrl ? (
+                                            <>
+                                                <img src={posterUrl} className="h-full w-full object-cover opacity-80" alt="Video thumbnail" />
+                                                <div className="absolute inset-0 flex items-center justify-center">
+                                                    <div className="bg-black/60 rounded-full p-3"><Play size={24} className="text-white" fill="white" /></div>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <div className="h-full flex items-center justify-center"><Video size={40} className="text-blue-500" /></div>
+                                        );
+                                    })() : (
                                         <img src={`/api/video/${event.videoId}?token=${token}`} className="h-full w-full object-cover" alt="Evidence Source" />
                                     )}
                                 </div>
                                 <div className="p-3 bg-gray-900 flex flex-col gap-2">
+                                    <div className="text-[10px] text-gray-300 font-semibold">{new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
                                     <div className="text-[10px] text-gray-500 truncate">{event.filename}</div>
                                     <div className="flex justify-between items-center">
                                         <select
@@ -140,7 +202,8 @@ export default function Gallery() {
                         ))}
                     </div>
                 </div>
-            ))}
+                );
+            })}
 
             {activeMedia && (
                 <div className="fixed inset-0 bg-black/95 z-50 flex flex-col items-center justify-center p-4">

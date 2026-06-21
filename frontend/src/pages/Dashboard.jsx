@@ -71,12 +71,24 @@ export default function Dashboard() {
                 <h3 className="text-xl font-bold mb-4">Event History</h3>
                 <div className="bg-black border border-gray-800 rounded-lg overflow-hidden">
                     {events.map((event, i) => {
-                        if (event.message?.includes('Uploaded') || event.message?.includes('Captured')) return null;
-                        const isAlert = event.type === 'alert';
+                        // The Dashboard is the live alert log: show one entry per
+                        // intrusion (the alert), not every uploaded media chunk.
+                        // Media chunks live in the Gallery, grouped by session.
+                        if (event.type !== 'alert') return null;
+                        const isAlert = true;
+                        const hasSession = Boolean(event.sessionId);
                         return (
-                            <div key={event._id || i} className={`p-4 border-b border-gray-800 flex justify-between items-center ${isAlert ? 'border-l-4 border-l-red-500' : 'border-l-4 border-l-blue-500'}`}>
+                            <div
+                                key={event._id || i}
+                                onClick={() => hasSession && navigate(`/gallery?session=${encodeURIComponent(event.sessionId)}`)}
+                                title={hasSession ? 'View evidence for this intrusion' : undefined}
+                                className={`p-4 border-b border-gray-800 flex justify-between items-center gap-3 transition ${hasSession ? 'cursor-pointer hover:bg-gray-900' : ''} ${isAlert ? 'border-l-4 border-l-red-500' : 'border-l-4 border-l-blue-500'}`}
+                            >
                                 <span className={isAlert ? 'text-red-400' : 'text-blue-400'}>
                                     <strong>{new Date(event.timestamp).toLocaleString()}:</strong> {event.message}
+                                </span>
+                                <span className="text-gray-500 text-xs whitespace-nowrap flex items-center gap-1">
+                                    <Camera size={12} /> {event.deviceId || 'unknown'}
                                 </span>
                             </div>
                         );
