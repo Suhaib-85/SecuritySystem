@@ -10,7 +10,10 @@ export const verifyToken = async (req, res, next) => {
 
     try {
         const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
-        const validDevice = await Device.findOne({ apiKeyHash: hashedToken, isActive: true });
+        // Authenticate by key only. isActive is the system's ARMED/DISARMED state,
+        // not a device-authorization flag — gating auth on it would (wrongly) reject
+        // a registered device whenever the system is disarmed.
+        const validDevice = await Device.findOne({ apiKeyHash: hashedToken });
         if (validDevice) {
             req.isPi = true;
             req.device = validDevice;

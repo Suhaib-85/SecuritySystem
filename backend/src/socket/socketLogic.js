@@ -14,7 +14,10 @@ export const setupSocketLogic = (io) => {
 
         try {
             const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
-            const validDevice = await Device.findOne({ apiKeyHash: hashedToken, isActive: true });
+            // Authenticate by key only — isActive is the ARMED/DISARMED state, not a
+            // device-authorization flag. Gating on it here would reject a disarmed
+            // device's reconnect, leaving it unable to receive the re-arm signal.
+            const validDevice = await Device.findOne({ apiKeyHash: hashedToken });
             if (validDevice) {
                 socket.isPi = true;
                 socket.device = validDevice;
