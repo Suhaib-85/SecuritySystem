@@ -1,0 +1,23 @@
+# edge_device/requirements_pi.txt — Raspberry Pi 5 (main_pi.py)
+#
+# PREREQUISITE: install hardware libraries via apt FIRST (they have C
+# extensions compiled against the system numpy, so pip versions would
+# conflict):
+#
+#   sudo apt install -y python3-picamera2 python3-opencv python3-gpiozero \
+#                       python3-lgpio python3-numpy
+#
+# Then create a venv that can see those system packages:
+#
+#   python3 -m venv --system-site-packages .venv
+#   source .venv/bin/activate
+#   pip install -r requirements_pi.txt
+#
+# AI Runtime — ai-edge-litert ships a cp313 aarch64 wheel (Python 3.13,
+# 64-bit ARM) which matches Raspberry Pi OS Trixie exactly.
+ai-edge-litert
+
+python-socketio
+websocket-client
+requests
+python-dotenv

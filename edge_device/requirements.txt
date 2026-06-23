@@ -1,0 +1,24 @@
+# edge_device/requirements.txt — Windows (main.py)
+#
+# Install:  pip install -r requirements.txt
+#
+# AI Runtime — the code auto-detects whichever is available, trying in order:
+#   1. ai-edge-litert   (Google's maintained successor to tflite-runtime)
+#   2. tflite-runtime    (legacy, limited wheel availability)
+#   3. tensorflow        (full framework, heaviest — works everywhere)
+# Uncomment ONE of the following:
+ai-edge-litert
+# tflite-runtime
+# tensorflow
+
+opencv-python
+numpy
+python-socketio
+websocket-client
+requests
+python-dotenv
+
+# H.264 encoding — bundles a static FFmpeg binary so videos play inline
+# in the browser. If removed, main.py falls back to OpenCV's mp4v codec
+# (records fine, but won't play inline in the Gallery).
+imageio-ffmpeg

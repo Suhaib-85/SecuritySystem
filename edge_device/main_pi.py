@@ -5,24 +5,17 @@ import os
 import socketio
 import threading
 import datetime
-
-
-def _utcnow():
-    """Timezone-aware UTC now, for DATA timestamps (edgeTimestamp). The browser
-    converts these to the viewer's local time for display. Replaces the
-    deprecated datetime.utcnow()."""
-    return datetime.datetime.now(datetime.timezone.utc)
-
-
-def _localnow():
-    """Local wall-clock time, for human-readable FILENAMES so they match the
-    clock on the wall (not UTC, which looked ~5h off in Pakistan)."""
-    return datetime.datetime.now()
 import requests
 import json
 import shutil
 import subprocess
 from dotenv import load_dotenv
+
+# --- RASPBERRY PI HARDWARE INTERFACES ---
+# Pi 5 NOTE: RPi.GPIO does NOT work on the Pi 5 (the RP1 I/O chip broke it).
+# gpiozero with the lgpio backend is the correct, Pi-5-native choice.
+from gpiozero import DigitalInputDevice, LED, Buzzer
+from picamera2 import Picamera2
 
 load_dotenv()
 
@@ -38,6 +31,11 @@ MAX_VIDEO_LENGTH = 60
 TARGET_FPS = 10.0
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 
+# --- GPIO PIN MAP (BCM numbering) ---
+PIR_PIN = 4      # HC-SR501 OUT  -> physical pin 7
+LED_PIN = 17     # green LED (via 330ohm) -> physical pin 11
+BUZZER_PIN = 27  # buzzer trigger (via NPN transistor) -> physical pin 13
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(CURRENT_DIR, "model")
 RECORDINGS_DIR = os.path.join(CURRENT_DIR, "recordings")
@@ -49,6 +47,23 @@ LABEL_PATH = os.path.join(MODEL_DIR, "coco_labels.txt")
 for folder in [RECORDINGS_DIR, PENDING_DIR]:
     if not os.path.exists(folder):
         os.makedirs(folder)
+
+
+def _utcnow():
+    """Timezone-aware UTC now, for DATA timestamps (edgeTimestamp) — the browser
+    converts these to the viewer's local time for display. (datetime.utcnow() is
+    deprecated on Python 3.12+, which is what Debian Trixie ships, so we avoid it.)"""
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _localnow():
+    """Local wall-clock time, for human-readable FILENAMES so they match the clock
+    on the wall rather than UTC. NOTE: this depends on the Pi's system timezone
+    being set correctly (a fresh Pi image may default to UTC — set it with
+    `sudo raspi-config` -> Localisation -> Timezone, or `sudo timedatectl
+    set-timezone Asia/Karachi`)."""
+    return datetime.datetime.now()
+
 
 # --- GLOBAL ARCHITECTURE STATE ---
 is_system_armed = False  # Controlled dynamically via dashboard WebSockets
@@ -146,6 +161,8 @@ def network_loop():
 threading.Thread(target=network_loop, daemon=True).start()
 
 # --- OPTIMIZED AI RUNTIME INITIALIZATION ---
+# On the Pi (Debian Trixie / Python 3.13) the first branch binds: ai-edge-litert
+# ships a cp313 aarch64 wheel and is the maintained successor to tflite_runtime.
 try:
     import ai_edge_litert.interpreter as litert_interpreter
 
@@ -216,16 +233,9 @@ def check_ai_for_person(frame):
     return False, 0.0
 
 
-def check_motion_detected(current_frame, prev_frame):
-    if prev_frame is None:
-        return False
-    gray1 = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
-    gray2 = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-    gray1 = cv2.GaussianBlur(gray1, (21, 21), 0)
-    gray2 = cv2.GaussianBlur(gray2, (21, 21), 0)
-    delta = cv2.absdiff(gray1, gray2)
-    thresh = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]
-    return cv2.countNonZero(thresh) > 3000
+# NOTE: The Windows build used webcam frame-differencing (check_motion_detected)
+# as a STAND-IN for a motion sensor. On the Pi we read the real HC-SR501 PIR
+# directly from GPIO, so that function is gone — see `pir.is_active` in the loop.
 
 
 # --- UNIQUE SESSION ID (millisecond resolution + same-ms guard) ---
@@ -424,9 +434,7 @@ def bootstrap_pending():
                 "type": meta.get("type", "video"),
                 "attempts": 0,
                 "sessionId": meta.get("sessionId", "unknown"),
-                "timestamp": meta.get(
-                    "timestamp", _utcnow().isoformat()
-                ),
+                "timestamp": meta.get("timestamp", _utcnow().isoformat()),
             }
             with pending_lock:
                 pending_uploads.append(metadata)
@@ -456,134 +464,150 @@ def bootstrap_pending():
 bootstrap_pending()
 start_sweeper()
 
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+# GPIO peripherals (gpiozero auto-selects the lgpio pin factory on the Pi 5).
+pir = DigitalInputDevice(PIR_PIN)          # HC-SR501 latched digital output
+status_led = LED(LED_PIN)                  # green status LED
+
+# The buzzer is OPTIONAL: a 2-pin buzzer needs an NPN transistor driver. Until
+# that's wired, leaving BUZZER_PIN unconnected is harmless — gpiozero just
+# toggles the pin. If init ever fails, we degrade to a no-op rather than crash.
+try:
+    buzzer = Buzzer(BUZZER_PIN)
+except Exception as e:
+    print(f"⚠️  BUZZER: init failed ({e}) — running without audible alert.")
+    buzzer = None
+
+# Camera: Pi 5 + Camera Module 3 is a libcamera/CSI device, so we use picamera2,
+# NOT cv2.VideoCapture(0) (which targets V4L2 webcams and won't grab the CSI cam).
+picam2 = Picamera2()
+# COLOR-ORDER GOTCHA: picamera2's "RGB888" yields a BGR-ordered numpy array,
+# which is exactly what OpenCV (imwrite / VideoWriter) and our existing model
+# pipeline expect — so frames are drop-in compatible with the Windows build and
+# need NO cvtColor. (If saved stills ever look blue-tinted, this is the knob.)
+video_config = picam2.create_video_configuration(
+    main={"size": (1280, 720), "format": "RGB888"}
+)
+picam2.configure(video_config)
+picam2.start()
+time.sleep(1.0)  # let auto-exposure / white-balance settle before first read
 
 # --- LOCK TRUE CAPTURE RESOLUTION ---
-# cap.set() only REQUESTS a resolution; many webcams ignore it and hand back a
-# different size. cv2.VideoWriter silently drops every frame whose dimensions
-# don't exactly match the size it was opened with, leaving 0-byte / unplayable
-# clips. So we probe one real frame and reuse its actual dimensions everywhere.
-ret, probe_frame = cap.read()
-if ret and probe_frame is not None:
+# Probe one real frame and reuse its actual dimensions everywhere, so the
+# VideoWriter never silently drops frames over a size mismatch.
+probe_frame = picam2.capture_array()
+if probe_frame is not None:
+    if probe_frame.shape[2] == 4:  # defensive: some modes hand back 4 channels
+        probe_frame = probe_frame[:, :, :3]
     FRAME_HEIGHT, FRAME_WIDTH = probe_frame.shape[:2]
 else:
     FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
 print(f"📐 CAPTURE RESOLUTION LOCKED AT: {FRAME_WIDTH}x{FRAME_HEIGHT}")
 
 
-class FFmpegWriter:
-    """Drop-in replacement for cv2.VideoWriter that pipes raw frames to an FFmpeg
-    subprocess encoding H.264 (libx264). Produces browser-native .mp4 files.
-
-    Implements the same three-method interface the rest of main.py relies on:
-      .isOpened()  — is the encoder still accepting frames?
-      .write(frame) — send one BGR numpy array
-      .release()   — flush, finalize (faststart), and close
-
-    Uses imageio-ffmpeg's bundled static binary so there is no manual FFmpeg
-    install or PATH configuration — just `pip install imageio-ffmpeg`.
-    """
-
-    def __init__(self, output_path, fps, frame_size):
-        w, h = frame_size
-        try:
-            from imageio_ffmpeg import get_ffmpeg_exe
-            ffmpeg_path = get_ffmpeg_exe()
-        except ImportError:
-            raise RuntimeError("imageio-ffmpeg not installed")
-
-        self._proc = subprocess.Popen(
-            [
-                ffmpeg_path,
-                "-y",                        # overwrite without asking
-                "-f", "rawvideo",            # input is raw uncompressed frames
-                "-vcodec", "rawvideo",
-                "-pix_fmt", "bgr24",         # OpenCV's native byte order
-                "-s", f"{w}x{h}",
-                "-r", str(fps),
-                "-i", "-",                   # read frames from stdin pipe
-                "-c:v", "libx264",           # H.264 encoder
-                "-preset", "ultrafast",      # real-time friendly, sharper motion than veryfast
-                "-pix_fmt", "yuv420p",       # mandatory for browser playback
-                "-movflags", "+faststart",   # moov atom at file start for streaming
-                output_path,
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self._opened = self._proc.poll() is None
-
-    def isOpened(self):
-        return self._opened and self._proc.poll() is None
-
-    def write(self, frame):
-        if not self.isOpened():
-            return
-        try:
-            self._proc.stdin.write(frame.tobytes())
-        except (BrokenPipeError, OSError):
-            self._opened = False
-
-    def release(self):
-        if self._proc is None:
-            return
-        try:
-            if self._proc.stdin:
-                self._proc.stdin.close()
-        except OSError:
-            pass
-        try:
-            self._proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            self._proc.kill()
-            self._proc.wait()
-        self._opened = False
-
-
 def create_video_writer(output_path):
-    """Create a video writer for recording intrusion clips.
+    """Create a VideoWriter for recording intrusion clips.
 
-    Tries, in order:
-      1. FFmpegWriter (H.264 via libx264) — browser-playable, needs imageio-ffmpeg
-      2. OpenCV avc1 — works on Pi / some Linux builds with hardware H.264
-      3. OpenCV mp4v — universal fallback, records reliably but won't play inline
-
-    The fallback chain means a missing FFmpeg install degrades gracefully to the
-    old mp4v behaviour rather than crashing.
+    On the Raspberry Pi 5, H.264 (avc1) is available, so clips are browser-native
+    and play INLINE in the dashboard Gallery. We try avc1 first and fall back to
+    mp4v only if the local OpenCV/FFmpeg build can't open an H.264 writer.
     """
-    # --- Priority 1: FFmpeg H.264 (browser-native) ---
-    try:
-        writer = FFmpegWriter(output_path, TARGET_FPS, (FRAME_WIDTH, FRAME_HEIGHT))
-        if writer.isOpened():
-            print("🎥 CODEC: Using FFmpegWriter (H.264/libx264 + faststart)")
-            return writer
-        print("⚠️  CODEC: FFmpegWriter created but not opened — falling back")
-        writer.release()
-    except Exception as e:
-        print(f"⚠️  CODEC: FFmpegWriter unavailable ({e}) — falling back")
-
-    # --- Priority 2 & 3: OpenCV codecs ---
     for codec in ("avc1", "mp4v"):
         fourcc = cv2.VideoWriter_fourcc(*codec)
         writer = cv2.VideoWriter(
             output_path, fourcc, TARGET_FPS, (FRAME_WIDTH, FRAME_HEIGHT)
         )
         if writer.isOpened():
-            print(f"🎥 CODEC: Using OpenCV {codec}")
             return writer
         writer.release()
-
     print(f"❌ CODEC: Could not initialize any VideoWriter for {output_path}")
     return None
 
 
-prev_frame = None
-ai_window_counter = 0
+def faststart_fixup(filepath):
+    """Relocate the MP4 moov atom to the file's start so browsers can begin
+    playback immediately without downloading the entire file first.
 
-print("\n📷 CORE ONLINE: Hardware capture loops engaged.")
+    OpenCV's VideoWriter writes moov at the END (it can't know the total frame
+    count until recording finishes). This post-process uses FFmpeg's
+    -movflags +faststart to remux the file (no re-encoding, just rearranges
+    bytes) — typically takes under a second for a 60s clip.
+
+    Best-effort: if FFmpeg isn't installed or the remux fails, the original file
+    is left untouched. The video still plays, just with a slightly delayed start
+    in the browser.
+    """
+    tmp_path = filepath + ".faststart.mp4"
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", filepath,
+                "-c", "copy",
+                "-movflags", "+faststart",
+                tmp_path,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        if result.returncode == 0 and os.path.exists(tmp_path):
+            os.replace(tmp_path, filepath)  # atomic on same filesystem
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass  # FFmpeg not available or failed — original file is fine
+    finally:
+        # Clean up the temp file if it exists (e.g. failed remux left a partial)
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+# --- LED STATE MACHINE ---
+# Desired behaviour:
+#   disarmed              -> off
+#   armed, idle           -> solid on
+#   armed, intrusion live -> blink (~0.25s)
+#   intrusion just ended  -> off for 3s, then back to solid (if still armed)
+# We only issue a gpiozero call when the mode CHANGES, so blink() isn't restarted
+# every loop (which would make it stutter). blink/on/off are all non-blocking.
+_led_mode = None
+
+
+def update_led():
+    global _led_mode
+    if not is_system_armed:
+        mode = "off"
+    elif intrusion_active:
+        mode = "blink"
+    elif (time.time() - last_intrusion_end) < 3:
+        mode = "off"
+    else:
+        mode = "solid"
+
+    if mode == _led_mode:
+        return
+    if mode == "off":
+        status_led.off()
+    elif mode == "solid":
+        status_led.on()
+    elif mode == "blink":
+        status_led.blink(on_time=0.25, off_time=0.25)
+    _led_mode = mode
+
+
+def chirp():
+    """Brief audible alert when a threat is verified (no-op if buzzer absent)."""
+    if buzzer is not None:
+        try:
+            buzzer.beep(on_time=0.1, off_time=0.05, n=2, background=True)
+        except Exception:
+            pass
+
+
+print("\n📷 CORE ONLINE: Hardware capture loops engaged. (Ctrl+C to stop)")
+
+ai_window_counter = 0
 
 # --- MAIN SYSTEM STATE LOOPS ---
 try:
@@ -591,11 +615,22 @@ try:
         loop_start = time.time()
         current_time = time.time()
 
-        ret, frame = cap.read()
-        if not ret:
-            print("Camera hardware read exception, retrying capture sequence...")
-            time.sleep(1)
+        # LED reflects system state on EVERY iteration — placed before the
+        # arm-delay / cooldown gates below so it keeps updating even when those
+        # gates `continue` and skip the rest of the loop.
+        update_led()
+
+        try:
+            frame = picam2.capture_array()
+        except Exception as e:
+            print(f"Camera capture exception ({e}), retrying capture sequence...")
+            time.sleep(0.5)
             continue
+        if frame is None:
+            time.sleep(0.1)
+            continue
+        if frame.shape[2] == 4:  # normalise to 3 channels if needed
+            frame = frame[:, :, :3]
 
         # Enforce systemic delay filters to handle initialization or cool-down transitions cleanly
         if current_time - arm_timestamp < ARM_DELAY:
@@ -603,12 +638,8 @@ try:
         if current_time - last_intrusion_end < INTRUSION_COOLDOWN:
             continue
 
-        pir_triggered = check_motion_detected(frame, prev_frame)
-        prev_frame = frame.copy()
-
-        # Visual telemetry interface marker (Blue dot signals hardware movement registration)
-        if pir_triggered:
-            cv2.circle(frame, (20, 20), 10, (255, 0, 0), -1)
+        # Real PIR read (replaces the Windows frame-differencing stand-in).
+        pir_triggered = pir.is_active
 
         # --- DECISION TREE EXECUTIVE LOGIC ---
         if is_system_armed:
@@ -651,6 +682,8 @@ try:
                     print(
                         f"\n🚨 [{current_time:.1f}s] THREAT VERIFIED. INTRUSION PROTOCOL ENGAGED. Session ID: {intrusion_session_id}"
                     )
+
+                    chirp()  # brief audible alert on verified threat
 
                     alert_payload = {
                         "message": "Threat verified. Recording pipeline active.",
@@ -712,6 +745,7 @@ try:
                         video_writer.release()
 
                     old_video_path = os.path.join(RECORDINGS_DIR, video_filename)
+                    faststart_fixup(old_video_path)
                     save_to_pending(old_video_path, "video", intrusion_session_id)
 
                     session_chunk_counter += 1
@@ -736,31 +770,34 @@ try:
                     last_intrusion_end = current_time
 
                     if video_filename:
+                        faststart_fixup(os.path.join(RECORDINGS_DIR, video_filename))
                         save_to_pending(
                             os.path.join(RECORDINGS_DIR, video_filename),
                             "video",
                             intrusion_session_id,
                         )
 
-        cv2.imshow("Security Feed", frame)
-        if cv2.waitKey(1) == ord("q"):
-            break
-
         processing_time = time.time() - loop_start
         sleep_duration = FRAME_INTERVAL - processing_time
         if sleep_duration > 0:
             time.sleep(sleep_duration)
 
-
 except KeyboardInterrupt:
-    print("\n🛑 SHUTDOWN: Ctrl+C received — releasing resources cleanly...")
+    print("\n🛑 SHUTDOWN: Ctrl+C received — releasing hardware cleanly...")
 finally:
     try:
         if video_writer:
             video_writer.release()
     except Exception:
         pass
-    if cap:
-        cap.release()
-    cv2.destroyAllWindows()
-    print("✅ SHUTDOWN: Resources released. Goodbye.")
+    try:
+        picam2.stop()
+    except Exception:
+        pass
+    for dev in (status_led, pir, buzzer):
+        try:
+            if dev is not None:
+                dev.close()
+        except Exception:
+            pass
+    print("✅ SHUTDOWN: Hardware released. Goodbye.")
