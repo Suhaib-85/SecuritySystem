@@ -68,6 +68,11 @@ PERSON_CONFIRM_FRAMES = 5
 last_frame_had_person = False
 confidence_sum = 0.0
 
+# Motion-quiet re-verification: sample several frames and require a confident
+# human, so no single misread frame can clear a session with a real person present.
+RECHECK_FRAMES = 5
+RECHECK_PERSON_THRESHOLD = 0.60
+
 intrusion_start_time = 0
 last_motion_time = 0
 last_ai_recheck_time = 0
@@ -214,6 +219,24 @@ def check_ai_for_person(frame):
 
     print(f"🧠 AI Inference: {inference_time:.1f}ms (No threat presence classified)")
     return False, 0.0
+
+
+def sample_human_present(n_frames, threshold):
+    """Sample n_frames live frames from the webcam and return True if ANY shows a
+    human at >= `threshold` confidence.
+
+    Biased toward CONTINUING the intrusion (we conclude 'no human' only if not a
+    single sampled frame shows one), because wrongly stopping a recording on a
+    real intruder is the worst failure mode for a security system.
+    """
+    for _ in range(n_frames):
+        ok, f = cap.read()
+        if not ok or f is None:
+            continue
+        found, conf = check_ai_for_person(f)
+        if found and conf >= threshold:
+            return True
+    return False
 
 
 def check_motion_detected(current_frame, prev_frame):
@@ -688,20 +711,22 @@ try:
 
                 if time_since_motion > 10 and time_since_ai_recheck > 10:
                     print(
-                        f"🔍 [{current_time:.1f}s] Motion signature quiet for 10s - Executing algorithmic re-check evaluation..."
+                        f"🔍 [{current_time:.1f}s] Motion quiet for 10s — re-verifying human "
+                        f"({RECHECK_FRAMES} frames @ {int(RECHECK_PERSON_THRESHOLD*100)}%)..."
                     )
-                    person_still_present, confidence = check_ai_for_person(frame)
+                    # Robust multi-frame decision — no single misread frame can
+                    # clear a session with a real person still present.
+                    person_still_present = sample_human_present(
+                        RECHECK_FRAMES, RECHECK_PERSON_THRESHOLD
+                    )
                     last_ai_recheck_time = current_time
 
+                    # Decision only: keep the session alive if a human is still here.
+                    # We do NOT upload a recheck still — the continuous video already
+                    # captures this moment, so a jpg would just duplicate evidence
+                    # and clutter the gallery.
                     if person_still_present:
                         last_motion_time = current_time
-                        now_str = _localnow().strftime("%H%M%S")
-                        still_filename = (
-                            f"evidence_{intrusion_session_id}_{now_str}_recheck.jpg"
-                        )
-                        still_path = os.path.join(RECORDINGS_DIR, still_filename)
-                        cv2.imwrite(still_path, frame)
-                        save_to_pending(still_path, "image", intrusion_session_id)
 
                 # SCENARIO A: 60-Second Video Boundary Hit (Intruder remains within sector)
                 if recording_duration > MAX_VIDEO_LENGTH:

@@ -93,6 +93,19 @@ session_chunk_counter = 1
 last_intrusion_end = 0
 INTRUSION_COOLDOWN = 5
 
+# --- SUSTAINED-MOTION HUMAN RE-VERIFICATION ---
+# The PIR and camera are independent sensors on the Pi, so continuous motion
+# (a pet, a covered lens) can keep an intrusion alive indefinitely while no
+# human is present. To close that blind spot, during an active intrusion we
+# periodically re-verify a human is STILL in frame — regardless of motion.
+SUSTAINED_RECHECK_INTERVAL = 15   # seconds of continuous motion between re-verifications
+SUSTAINED_RECHECK_FRAMES = 5      # frames sampled per re-verification
+SUSTAINED_PERSON_THRESHOLD = 0.60 # a frame counts as "human" only at >= 60% confidence
+last_sustained_recheck_time = 0
+ignore_pir_extension = False      # set True once a re-verify confirms no human;
+                                  # PIR then stops refreshing last_motion_time so the
+                                  # normal 20s-quiet clear can take over. Resets per session.
+
 pending_uploads = []
 is_sweeping = False
 last_error_message = ""
@@ -231,6 +244,27 @@ def check_ai_for_person(frame):
 
     print(f"🧠 AI Inference: {inference_time:.1f}ms (No threat presence classified)")
     return False, 0.0
+
+
+def sample_human_present(capture_fn, n_frames, threshold):
+    """Sample n_frames live frames and return True if ANY of them contains a
+    human at >= `threshold` confidence.
+
+    Used by the sustained-motion re-verification: biased toward CONTINUING the
+    intrusion (we only conclude 'no human' if not a single sampled frame shows
+    one), because wrongly stopping a recording on a real intruder is the worst
+    failure mode for a security system. capture_fn() returns a fresh BGR frame.
+    """
+    for _ in range(n_frames):
+        frame = capture_fn()
+        if frame is None:
+            continue
+        if frame.shape[2] == 4:
+            frame = frame[:, :, :3]
+        found, conf = check_ai_for_person(frame)
+        if found and conf >= threshold:
+            return True  # one solid human sighting is enough to keep recording
+    return False
 
 
 # NOTE: The Windows build used webcam frame-differencing (check_motion_detected)
@@ -675,6 +709,8 @@ try:
                     intrusion_start_time = current_time
                     last_motion_time = current_time
                     last_ai_recheck_time = current_time
+                    last_sustained_recheck_time = current_time  # start the 15s re-verify clock
+                    ignore_pir_extension = False                 # fresh session: trust PIR again
                     session_chunk_counter = 1
 
                     intrusion_session_id = make_session_id()
@@ -712,29 +748,61 @@ try:
                     # Resize to the writer's locked resolution. If a frame ever comes
                     # back at a different size, an unmatched write is silently dropped.
                     video_writer.write(cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT)))
-                if pir_triggered:
+                # PIR keeps the session alive — UNLESS a re-verification has
+                # confirmed no human is present (ignore_pir_extension), in which
+                # case continued motion (e.g. a pet) is no longer allowed to
+                # extend recording, letting the 20s-quiet clear take over.
+                if pir_triggered and not ignore_pir_extension:
                     last_motion_time = current_time
 
                 time_since_motion = current_time - last_motion_time
                 time_since_ai_recheck = current_time - last_ai_recheck_time
                 recording_duration = current_time - intrusion_start_time
 
-                if time_since_motion > 10 and time_since_ai_recheck > 10:
+                # --- SUSTAINED-MOTION HUMAN RE-VERIFICATION ---
+                # Independent of the motion-quiet recheck below: fires after
+                # SUSTAINED_RECHECK_INTERVAL seconds of CONTINUOUS recording while
+                # PIR-extension is still active. Closes the "pet trips PIR forever"
+                # blind spot caused by PIR and camera being separate sensors.
+                if (not ignore_pir_extension
+                        and (current_time - last_sustained_recheck_time) >= SUSTAINED_RECHECK_INTERVAL):
                     print(
-                        f"🔍 [{current_time:.1f}s] Motion signature quiet for 10s - Executing algorithmic re-check evaluation..."
+                        f"👁️  [{current_time:.1f}s] Sustained motion — re-verifying a human is still in frame "
+                        f"({SUSTAINED_RECHECK_FRAMES} frames @ {int(SUSTAINED_PERSON_THRESHOLD*100)}%)..."
                     )
-                    person_still_present, confidence = check_ai_for_person(frame)
+                    human_present = sample_human_present(
+                        picam2.capture_array, SUSTAINED_RECHECK_FRAMES, SUSTAINED_PERSON_THRESHOLD
+                    )
+                    last_sustained_recheck_time = current_time
+                    last_ai_recheck_time = current_time
+                    if human_present:
+                        last_motion_time = current_time  # confirmed human → keep alive
+                        print(f"   ✅ Human still present — intrusion continues.")
+                    else:
+                        ignore_pir_extension = True  # stop PIR from extending the session
+                        print(
+                            f"   ⚠️  No human in {SUSTAINED_RECHECK_FRAMES} frames — ignoring further PIR; "
+                            f"20s-quiet clear will now take over."
+                        )
+
+                if time_since_motion > 10 and time_since_ai_recheck > 10 and not ignore_pir_extension:
+                    print(
+                        f"🔍 [{current_time:.1f}s] Motion quiet for 10s — re-verifying human "
+                        f"({SUSTAINED_RECHECK_FRAMES} frames @ {int(SUSTAINED_PERSON_THRESHOLD*100)}%)..."
+                    )
+                    # Same robust 5-frame/60% decision as the sustained recheck —
+                    # no single misread frame can clear a session with a real person.
+                    person_still_present = sample_human_present(
+                        picam2.capture_array, SUSTAINED_RECHECK_FRAMES, SUSTAINED_PERSON_THRESHOLD
+                    )
                     last_ai_recheck_time = current_time
 
+                    # Decision only: keep the session alive if a human is still here.
+                    # We do NOT upload a recheck still — the continuous video already
+                    # captures this moment, so a jpg would just duplicate evidence
+                    # and clutter the gallery.
                     if person_still_present:
                         last_motion_time = current_time
-                        now_str = _localnow().strftime("%H%M%S")
-                        still_filename = (
-                            f"evidence_{intrusion_session_id}_{now_str}_recheck.jpg"
-                        )
-                        still_path = os.path.join(RECORDINGS_DIR, still_filename)
-                        cv2.imwrite(still_path, frame)
-                        save_to_pending(still_path, "image", intrusion_session_id)
 
                 # SCENARIO A: 60-Second Video Boundary Hit (Intruder remains within sector)
                 if recording_duration > MAX_VIDEO_LENGTH:
