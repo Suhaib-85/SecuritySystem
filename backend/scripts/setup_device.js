@@ -1,6 +1,4 @@
 import { setServers } from 'dns';
-setServers(['8.8.8.8', '8.8.4.4']);
-
 import mongoose from 'mongoose';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
@@ -10,6 +8,12 @@ import path from 'path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '../.env') });
+
+// Optional DNS override — OFF by default (see server.js for rationale).
+if (process.env.FORCE_DNS_OVERRIDE === 'true') {
+    setServers(['1.1.1.1', '1.0.0.1']);
+    console.log('[DNS] Override active — using Cloudflare resolvers (1.1.1.1).');
+}
 
 async function provisionDevice() {
     try {

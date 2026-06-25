@@ -1,6 +1,4 @@
 import { setServers } from 'dns';
-setServers(['8.8.8.8', '8.8.4.4']);
-
 import { errorHandler } from './src/middleware/errorHandler.js';
 import express from 'express';
 import { createServer } from 'http';
@@ -16,6 +14,16 @@ import apiRoutes from './src/routes/api.js';
 import { setupSocketLogic } from './src/socket/socketLogic.js';
 
 dotenv.config();
+
+// Optional DNS override — OFF by default. Set FORCE_DNS_OVERRIDE=true in .env
+// only if the ISP firewall (e.g. PTCL) starts disrupting outbound Atlas traffic;
+// it pins a fast public resolver (Cloudflare) to bypass ISP DNS interference.
+// Must run AFTER dotenv.config() so the flag is actually loaded. Leaving it off
+// uses the system/router DNS, which is faster under normal conditions.
+if (process.env.FORCE_DNS_OVERRIDE === 'true') {
+    setServers(['1.1.1.1', '1.0.0.1']);
+    console.log('[DNS] Override active — using Cloudflare resolvers (1.1.1.1).');
+}
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);

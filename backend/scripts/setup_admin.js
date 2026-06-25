@@ -1,5 +1,4 @@
 import { setServers } from 'dns';
-setServers(['8.8.8.8', '8.8.4.4']);
 import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 import dotenv from 'dotenv';
@@ -8,6 +7,12 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '../.env') });
+
+// Optional DNS override — OFF by default (see server.js for rationale).
+if (process.env.FORCE_DNS_OVERRIDE === 'true') {
+    setServers(['1.1.1.1', '1.0.0.1']);
+    console.log('[DNS] Override active — using Cloudflare resolvers (1.1.1.1).');
+}
 
 const AdminSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true },
