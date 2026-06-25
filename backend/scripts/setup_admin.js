@@ -10,8 +10,8 @@ dotenv.config({ path: path.join(__dirname, '../.env') });
 
 // Optional DNS override — OFF by default (see server.js for rationale).
 if (process.env.FORCE_DNS_OVERRIDE === 'true') {
-    setServers(['1.1.1.1', '1.0.0.1']);
-    console.log('[DNS] Override active — using Cloudflare resolvers (1.1.1.1).');
+    setServers(['8.8.8.8', '8.8.4.4']);
+    console.log('[DNS] Override active — using Google resolvers (8.8.8.8).');
 }
 
 const AdminSchema = new mongoose.Schema({

@@ -21,8 +21,8 @@ dotenv.config();
 // Must run AFTER dotenv.config() so the flag is actually loaded. Leaving it off
 // uses the system/router DNS, which is faster under normal conditions.
 if (process.env.FORCE_DNS_OVERRIDE === 'true') {
-    setServers(['1.1.1.1', '1.0.0.1']);
-    console.log('[DNS] Override active — using Cloudflare resolvers (1.1.1.1).');
+    setServers(['8.8.8.8', '8.8.4.4']);
+    console.log('[DNS] Override active — using Google resolvers (8.8.8.8).');
 }
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();

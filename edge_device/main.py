@@ -28,10 +28,10 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:3000")
-SECRET_KEY = os.getenv("PI_SECRET")
+SECRET_KEY = os.getenv("WIN_SECRET")
 
 if not SECRET_KEY:
-    raise ValueError("FATAL: PI_SECRET must be set in the environment profile")
+    raise ValueError("FATAL: WIN_SECRET must be set in the environment profile")
 
 CONFIDENCE_THRESHOLD = 0.50
 MAX_VIDEO_LENGTH = 60
