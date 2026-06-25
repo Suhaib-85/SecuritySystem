@@ -35,7 +35,7 @@ if not SECRET_KEY:
 
 CONFIDENCE_THRESHOLD = 0.50
 MAX_VIDEO_LENGTH = 60
-TARGET_FPS = 10.0
+TARGET_FPS = 12.0
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -528,7 +528,9 @@ class FFmpegWriter:
                 "-r", str(fps),
                 "-i", "-",                   # read frames from stdin pipe
                 "-c:v", "libx264",           # H.264 encoder
-                "-preset", "ultrafast",      # real-time friendly, sharper motion than veryfast
+                "-preset", "fast",           # efficient compression at the same CRF/quality
+                                             # (was ultrafast — ~3.6x larger files for no
+                                             # quality gain; 10-12fps leaves ample CPU headroom)
                 "-pix_fmt", "yuv420p",       # mandatory for browser playback
                 "-movflags", "+faststart",   # moov atom at file start for streaming
                 output_path,
