@@ -119,7 +119,7 @@ def connect():
     global is_connected, last_error_message
     is_connected = True
     last_error_message = ""
-    print(f"\n✅ NETWORK: Connected successfully. Session ID: {sio.sid}")
+    print(f"\n[NET] Connected. Session ID: {sio.sid}")
     sio.emit("register_pi", {"token": SECRET_KEY})
 
     # Flush alert cache generated during network dropouts
@@ -132,14 +132,14 @@ def connect():
 def disconnect():
     global is_connected
     is_connected = False
-    print("\n❌ NETWORK: Dropped connection interface. Re-establishing channel...")
+    print("\n[NET] Connection dropped — re-establishing channel...")
 
 
 @sio.event
 def connect_error(err):
     global last_error_message
     if str(err) != last_error_message:
-        print(f"❌ Socket Connection Error: {err}")
+        print(f"[NET ERROR] {err}")
         last_error_message = str(err)
 
 
@@ -151,7 +151,7 @@ def state_update(data):
         arm_timestamp = time.time()
     is_system_armed = new_state
     print(
-        f"🔄 STATE: System telemetry synchronized to: {'ARMED 🔴' if is_system_armed else 'DISARMED 🟢'}"
+        f"[STATE] System {'ARMED' if is_system_armed else 'DISARMED'}"
     )
 
 
@@ -180,21 +180,21 @@ try:
     import ai_edge_litert.interpreter as litert_interpreter
 
     interpreter_class = litert_interpreter.Interpreter
-    print("🧠 AI ENGINE: Native Google LiteRT Runtime successfully bound.")
+    print("[AI] LiteRT runtime bound.")
 except ImportError:
     try:
         import tflite_runtime.interpreter as tflite
 
         interpreter_class = tflite.Interpreter
         print(
-            "🧠 AI ENGINE: Falling back to legacy tflite_runtime interpreter platform."
+            "[AI] Falling back to legacy tflite_runtime."
         )
     except ImportError:
         import tensorflow.lite as tflite
 
         interpreter_class = tflite.Interpreter
         print(
-            "🧠 AI ENGINE: Falling back to development ecosystem standard TensorFlow Lite framework."
+            "[AI] Falling back to TensorFlow Lite."
         )
 
 interpreter = interpreter_class(model_path=MODEL_PATH, num_threads=2)
@@ -206,6 +206,36 @@ width = input_details[0]["shape"][2]
 
 with open(LABEL_PATH, "r") as f:
     labels = [line.strip() for line in f.readlines() if line.strip()]
+
+
+# Throttled AI-inference logging. Printing every negative inference floods the
+# terminal (~12/sec while armed and idle). Instead we log only when the result
+# CHANGES (person appears / disappears) plus a slow heartbeat every N frames so
+# the terminal still shows the loop is alive during long quiet periods.
+_AI_LOG = {"last_found": None, "frames_since_log": 0}
+AI_LOG_HEARTBEAT = 30  # negative-state heartbeat: log "scanning" once per N frames
+_AI_LOG_SUPPRESS = False  # muted during multi-frame rechecks (they log their own summary)
+
+
+def log_inference(found, confidence, inference_time):
+    if _AI_LOG_SUPPRESS:
+        return
+    changed = found != _AI_LOG["last_found"]
+    _AI_LOG["frames_since_log"] += 1
+
+    if found:
+        if changed or _AI_LOG["frames_since_log"] >= AI_LOG_HEARTBEAT:
+            print(f"[AI] {inference_time:.1f}ms — person confirmed ({int(confidence*100)}%)")
+            _AI_LOG["frames_since_log"] = 0
+    else:
+        if changed:
+            print(f"[AI] {inference_time:.1f}ms — area clear")
+            _AI_LOG["frames_since_log"] = 0
+        elif _AI_LOG["frames_since_log"] >= AI_LOG_HEARTBEAT:
+            print(f"[AI] scanning — no threat ({inference_time:.1f}ms)")
+            _AI_LOG["frames_since_log"] = 0
+
+    _AI_LOG["last_found"] = found
 
 
 def check_ai_for_person(frame):
@@ -237,12 +267,10 @@ def check_ai_for_person(frame):
         if object_name == "person":
             ymin, xmin, ymax, xmax = boxes[i]
             if (ymax - ymin) >= 0.1 and (xmax - xmin) >= 0.1:
-                print(
-                    f"🧠 AI Inference: {inference_time:.1f}ms (Person Confirmed: {int(scores[i]*100)}%)"
-                )
+                log_inference(True, scores[i], inference_time)
                 return True, scores[i]
 
-    print(f"🧠 AI Inference: {inference_time:.1f}ms (No threat presence classified)")
+    log_inference(False, 0.0, inference_time)
     return False, 0.0
 
 
@@ -255,16 +283,21 @@ def sample_human_present(capture_fn, n_frames, threshold):
     one), because wrongly stopping a recording on a real intruder is the worst
     failure mode for a security system. capture_fn() returns a fresh BGR frame.
     """
-    for _ in range(n_frames):
-        frame = capture_fn()
-        if frame is None:
-            continue
-        if frame.shape[2] == 4:
-            frame = frame[:, :, :3]
-        found, conf = check_ai_for_person(frame)
-        if found and conf >= threshold:
-            return True  # one solid human sighting is enough to keep recording
-    return False
+    global _AI_LOG_SUPPRESS
+    _AI_LOG_SUPPRESS = True
+    try:
+        for _ in range(n_frames):
+            frame = capture_fn()
+            if frame is None:
+                continue
+            if frame.shape[2] == 4:
+                frame = frame[:, :, :3]
+            found, conf = check_ai_for_person(frame)
+            if found and conf >= threshold:
+                return True  # one solid human sighting is enough to keep recording
+        return False
+    finally:
+        _AI_LOG_SUPPRESS = False
 
 
 # NOTE: The Windows build used webcam frame-differencing (check_motion_detected)
@@ -321,10 +354,10 @@ def save_to_pending(file_path, file_type="video", session_id=None):
 
         with pending_lock:
             pending_uploads.append(metadata)
-        print(f"📁 STORAGE: Asset compiled and indexed for queue execution: {filename}")
+        print(f"[STORAGE] Asset staged for upload: {filename}")
         return True
     except Exception as e:
-        print(f"❌ STORAGE ERROR: Failed to stage asset for transmission: {e}")
+        print(f"[STORAGE ERROR] Failed to stage asset: {e}")
         return False
 
 
@@ -355,7 +388,7 @@ def attempt_upload(pending_file):
 
         if response.status_code == 201:
             print(
-                f"🧹 SWEEPER: Transaction clear. Uploaded successfully: {pending_file['filename']}"
+                f"[SWEEP] Uploaded successfully: {pending_file['filename']}"
             )
             os.remove(pending_file["filepath"])
             if os.path.exists(json_path):
@@ -367,7 +400,7 @@ def attempt_upload(pending_file):
         else:
             if pending_file["attempts"] >= MAX_UPLOAD_LIMIT:
                 print(
-                    f"❌ SWEEPER: Boundary limit dropped. Dropping corrupted package: {pending_file['filename']}"
+                    f"[SWEEP ERROR] Boundary limit — dropping corrupted package: {pending_file['filename']}"
                 )
                 os.remove(pending_file["filepath"])
                 if os.path.exists(json_path):
@@ -381,7 +414,7 @@ def attempt_upload(pending_file):
         # is nothing to retry, so drop this stale queue entry and its sidecar
         # instead of mislabelling it as a network failure and retrying forever.
         print(
-            f"⚠️  SWEEPER: File no longer on disk for {pending_file['filename']} — dropping stale queue entry."
+            f"[SWEEP WARN] File no longer on disk for {pending_file['filename']} — dropping stale queue entry."
         )
         json_path = f"{pending_file['filepath']}.json"
         if os.path.exists(json_path):
@@ -395,7 +428,7 @@ def attempt_upload(pending_file):
         return False
     except Exception as e:
         # Genuine network/transport failure: keep the file and retry next sweep.
-        print(f"❌ SWEEPER TRANSMISSION FAILED: Network channel blocked: {e}")
+        print(f"[SWEEP ERROR] Upload failed — network blocked: {e}")
         return False
 
 
@@ -448,7 +481,7 @@ def bootstrap_pending():
         json_path = f"{filepath}.json"
 
         if not os.path.exists(json_path):
-            print(f"🗑️  RECOVERY: No sidecar for {filename} — discarding orphan.")
+            print(f"[RECOVERY] No sidecar for {filename} — discarding orphan.")
             try:
                 os.remove(filepath)
             except OSError:
@@ -474,7 +507,7 @@ def bootstrap_pending():
                 pending_uploads.append(metadata)
             recovered += 1
         except (json.JSONDecodeError, OSError, ValueError) as e:
-            print(f"🗑️  RECOVERY: Corrupt sidecar for {filename} ({e}) — discarding orphan.")
+            print(f"[RECOVERY] Corrupt sidecar for {filename} ({e}) — discarding orphan.")
             for p in (filepath, json_path):
                 try:
                     os.remove(p)
@@ -491,7 +524,7 @@ def bootstrap_pending():
                 pass
 
     if recovered:
-        print(f"🔁 RECOVERY: Re-queued {recovered} un-uploaded asset(s) from a previous session.")
+        print(f"[RECOVERY] Re-queued {recovered} un-uploaded asset(s) from a previous session.")
 
 
 # --- HARDWARE RUNTIME INIT ---
@@ -508,7 +541,7 @@ status_led = LED(LED_PIN)                  # green status LED
 try:
     buzzer = Buzzer(BUZZER_PIN)
 except Exception as e:
-    print(f"⚠️  BUZZER: init failed ({e}) — running without audible alert.")
+    print(f"[BUZZER] init failed ({e}) — running without audible alert.")
     buzzer = None
 
 # Camera: Pi 5 + Camera Module 3 is a libcamera/CSI device, so we use picamera2,
@@ -535,7 +568,7 @@ if probe_frame is not None:
     FRAME_HEIGHT, FRAME_WIDTH = probe_frame.shape[:2]
 else:
     FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
-print(f"📐 CAPTURE RESOLUTION LOCKED AT: {FRAME_WIDTH}x{FRAME_HEIGHT}")
+print(f"[CAMERA] Capture resolution locked at {FRAME_WIDTH}x{FRAME_HEIGHT}")
 
 
 def create_video_writer(output_path):
@@ -553,7 +586,7 @@ def create_video_writer(output_path):
         if writer.isOpened():
             return writer
         writer.release()
-    print(f"❌ CODEC: Could not initialize any VideoWriter for {output_path}")
+    print(f"[CODEC ERROR] Could not initialize any VideoWriter for {output_path}")
     return None
 
 
@@ -639,7 +672,7 @@ def chirp():
             pass
 
 
-print("\n📷 CORE ONLINE: Hardware capture loops engaged. (Ctrl+C to stop)")
+print("\n[CORE] Capture loop engaged. (Ctrl+C to stop)")
 
 ai_window_counter = 0
 
@@ -657,7 +690,7 @@ try:
         try:
             frame = picam2.capture_array()
         except Exception as e:
-            print(f"Camera capture exception ({e}), retrying capture sequence...")
+            print(f"[CAMERA] Capture exception ({e}) — retrying...")
             time.sleep(0.5)
             continue
         if frame is None:
@@ -716,7 +749,7 @@ try:
                     intrusion_session_id = make_session_id()
 
                     print(
-                        f"\n🚨 [{current_time:.1f}s] THREAT VERIFIED. INTRUSION PROTOCOL ENGAGED. Session ID: {intrusion_session_id}"
+                        f"\n[ALERT] [{current_time:.1f}s] Threat verified — intrusion protocol engaged. Session: {intrusion_session_id}"
                     )
 
                     chirp()  # brief audible alert on verified threat
@@ -729,7 +762,7 @@ try:
                     if is_connected:
                         sio.emit("pi_alert", alert_payload)
                     else:
-                        print(f"✉️ Alert buffered locally: {alert_payload['message']}")
+                        print(f"[ALERT] Buffered locally: {alert_payload['message']}")
                         missed_alerts.append(alert_payload)
 
                     video_filename = (
@@ -767,7 +800,7 @@ try:
                 if (not ignore_pir_extension
                         and (current_time - last_sustained_recheck_time) >= SUSTAINED_RECHECK_INTERVAL):
                     print(
-                        f"👁️  [{current_time:.1f}s] Sustained motion — re-verifying a human is still in frame "
+                        f"[RECHECK] [{current_time:.1f}s] Sustained motion — re-verifying human "
                         f"({SUSTAINED_RECHECK_FRAMES} frames @ {int(SUSTAINED_PERSON_THRESHOLD*100)}%)..."
                     )
                     human_present = sample_human_present(
@@ -777,17 +810,17 @@ try:
                     last_ai_recheck_time = current_time
                     if human_present:
                         last_motion_time = current_time  # confirmed human → keep alive
-                        print(f"   ✅ Human still present — intrusion continues.")
+                        print(f"[RECHECK] Human still present — intrusion continues.")
                     else:
                         ignore_pir_extension = True  # stop PIR from extending the session
                         print(
-                            f"   ⚠️  No human in {SUSTAINED_RECHECK_FRAMES} frames — ignoring further PIR; "
+                            f"[RECHECK] No human in {SUSTAINED_RECHECK_FRAMES} frames — ignoring further PIR; "
                             f"20s-quiet clear will now take over."
                         )
 
                 if time_since_motion > 10 and time_since_ai_recheck > 10 and not ignore_pir_extension:
                     print(
-                        f"🔍 [{current_time:.1f}s] Motion quiet for 10s — re-verifying human "
+                        f"[RECHECK] [{current_time:.1f}s] Motion quiet 10s — re-verifying human "
                         f"({SUSTAINED_RECHECK_FRAMES} frames @ {int(SUSTAINED_PERSON_THRESHOLD*100)}%)..."
                     )
                     # Same robust 5-frame/60% decision as the sustained recheck —
@@ -807,7 +840,7 @@ try:
                 # SCENARIO A: 60-Second Video Boundary Hit (Intruder remains within sector)
                 if recording_duration > MAX_VIDEO_LENGTH:
                     print(
-                        f"\n📦 [{current_time:.1f}s] Primary chunk limit reached. Executing stateless asset rollover loop..."
+                        f"\n[REC] [{current_time:.1f}s] Chunk limit reached — rolling over to next segment..."
                     )
                     if video_writer:
                         video_writer.release()
@@ -822,14 +855,14 @@ try:
                     )
                     video_path = os.path.join(RECORDINGS_DIR, video_filename)
 
-                    print(f"🎬 Rollover block opened: {video_filename}")
+                    print(f"[REC] Rollover chunk opened: {video_filename}")
                     video_writer = create_video_writer(video_path)
                     intrusion_start_time = current_time
 
                 # SCENARIO B: System Boundary Cleared (Sector unoccupied for 20 seconds)
                 elif time_since_motion > 20 and time_since_ai_recheck > 10:
                     print(
-                        f"⏹️ [{current_time:.1f}s] INTRUSION THREAT RESCINDED. Closing operational session log metadata structures."
+                        f"[REC] [{current_time:.1f}s] Intrusion cleared — sector unoccupied 20s, closing session."
                     )
                     intrusion_active = False
                     if video_writer:
@@ -851,7 +884,7 @@ try:
             time.sleep(sleep_duration)
 
 except KeyboardInterrupt:
-    print("\n🛑 SHUTDOWN: Ctrl+C received — releasing hardware cleanly...")
+    print("\n[SHUTDOWN] Ctrl+C — releasing hardware...")
 finally:
     try:
         if video_writer:
@@ -868,4 +901,4 @@ finally:
                 dev.close()
         except Exception:
             pass
-    print("✅ SHUTDOWN: Hardware released. Goodbye.")
+    print("[SHUTDOWN] Hardware released. Goodbye.")
