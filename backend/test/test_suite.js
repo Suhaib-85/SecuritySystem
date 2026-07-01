@@ -18,7 +18,7 @@ const HARDWARE_SECRET = process.env.PI_SECRET || 'ci_test_secret_key_123';
 const JWT_SECRET = process.env.JWT_SECRET;
 
 console.log("====================================================");
-console.log("🚀 INITIALIZING BACKEND PIPELINE VERIFICATION SUITE");
+console.log(" INITIALIZING BACKEND PIPELINE VERIFICATION SUITE ");
 console.log("====================================================");
 
 // Helper function to create a stream from the real sample video

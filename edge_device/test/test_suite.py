@@ -1,7 +1,7 @@
 import sys
 
 print("==================================================")
-print("🚀 INITIALIZING EDGE AI PIPELINE VERIFICATION SUITE")
+print(" INITIALIZING EDGE AI PIPELINE VERIFICATION SUITE ")
 print("==================================================")
 
 
